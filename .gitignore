@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 outputs/
+review_uploads/
 *.pt
 .DS_Store
 .venv/
