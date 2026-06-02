@@ -4,7 +4,7 @@
 
 This repository builds a local ski pose overlay workflow. `app.py` provides the Streamlit UI, while `run_overlay.py` is the command-line entry point. Core processing code lives in `ski_pose_overlay/`, with `pipeline.py` containing pose detection, target selection, smoothing, recovery, and rendering logic. Research and implementation notes are kept in `README.md`, `IMPLEMENTATION_STEPS.md`, `RESEARCH_NOTES.md`, and `OCCLUSION_RESEARCH.md`.
 
-Generated artifacts belong in `outputs/`, including uploaded videos, overlay MP4s, keypoint JSON, and report JSON. YOLO model weights such as `yolo11n-pose.pt` and `yolo11s-pose.pt` are local runtime assets and should not be committed.
+Generated artifacts belong in `outputs/`, including uploaded videos, overlay MP4s, keypoint JSON, and report JSON. Drive-ready review bundles may be staged locally in `review_uploads/`. YOLO model weights such as `yolo11n-pose.pt` and `yolo11s-pose.pt` are local runtime assets and should not be committed.
 
 ## Build, Test, and Development Commands
 
@@ -45,8 +45,42 @@ There is no dedicated test suite in this snapshot. Validate changes with targete
 
 ## Commit & Pull Request Guidelines
 
-Local git history is unavailable in this checkout, so no project-specific commit convention can be inferred. Use concise, imperative commit messages such as `Add occlusion recovery smoke test` or `Tune far skier defaults`. Pull requests should describe the scenario tested, include the exact command used, mention affected presets/backends, and attach screenshots or sample output paths when overlay rendering changes.
+Use concise, imperative commit messages such as `Improve skier detection` or `Tune far skier defaults`. Keep one improvement idea per branch and PR. Use simple branch names, for example `improve-skier-detection`, `improve-far-skier-early-detection`, or `fix-qiaobo-target-selection`.
+
+The preferred review loop is:
+
+1. Create a new branch from current `main`.
+2. Implement one focused detection improvement.
+3. Generate review videos and metrics.
+4. Open a PR with code changes, eval command, metrics summary, and Google Drive review folder link.
+5. Wait for user review comments on GitHub.
+6. If the PR is directionally useful, the user merges it.
+7. Read the merged PR comments before starting the next branch/PR.
+
+Do not keep expanding one PR indefinitely. Treat each PR as one accepted or rejected experiment.
+
+## Review Artifacts & Google Drive
+
+Large videos do not belong in git. Store review outputs in Google Drive under:
+
+```text
+/Users/quan/Library/CloudStorage/GoogleDrive-qshi.personal@gmail.com/My Drive/ski project/
+```
+
+Use one folder per PR:
+
+```text
+PR-001-improve-skier-detection/
+  videos/
+  metrics/
+```
+
+When possible, generate eval outputs directly into the PR-specific Drive folder. If local intermediate output is needed, copy only the final review videos and `summary.md`/`summary.json` into Drive. Update the PR body with the Drive folder link.
+
+## Agent Workflow Notes
+
+Before starting a new improvement, check GitHub PR comments from the previous merged PR. Convert the user feedback into the next focused branch. Current known feedback after PR #1: early far-away skier detection is missing in the first seconds of `1592`, `1571`, and `qiaobo_day2`; `qiaobo_day1` still alternates target around 8-12s and switches to the wrong skier after 13s.
 
 ## Security & Configuration Tips
 
-Do not commit videos, generated outputs, Python caches, or model weights; `.gitignore` already covers `outputs/`, `__pycache__/`, `*.pyc`, and `*.pt`. Keep absolute local media paths out of reusable examples unless they are clearly marked as local-only.
+Do not commit videos, generated outputs, Drive review bundles, Python caches, or model weights; `.gitignore` covers `outputs/`, `review_uploads/`, `__pycache__/`, `*.pyc`, `*.pt`, and `.DS_Store`. Keep absolute local media paths out of reusable examples unless they are clearly marked as local-only.
