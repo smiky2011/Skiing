@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "description": "Small repeatable detection-quality evaluation set for ski pose overlay changes.",
+  "cases": [
+    {
+      "id": "outdoor_clear_1592_standard",
+      "video": "/Users/quan/Documents/石泉/ski/1592_raw.MP4",
+      "preset": "standard",
+      "start_frame": 0,
+      "max_frames": 420,
+      "target_strategy": "moving",
+      "target_lock_delay_frames": 180,
+      "target_min_displacement_px": 80.0,
+      "target_min_downhill_px": 0.0,
+      "purpose": "Baseline clear outdoor skier; should lock onto the main skier with stable full-body keypoints.",
+      "review_focus": ["target lock", "hip/knee/ankle stability", "early tracking loss"]
+    },
+    {
+      "id": "outdoor_moving_1571_far",
+      "video": "/Users/quan/Documents/石泉/ski/1571_raw.MP4",
+      "preset": "far",
+      "start_frame": 0,
+      "max_frames": 700,
+      "target_strategy": "moving",
+      "target_point": [782.0, 447.0],
+      "target_frame": 480,
+      "target_lock_delay_frames": 400,
+      "target_min_displacement_px": 120.0,
+      "target_min_downhill_px": 0.0,
+      "purpose": "Outdoor moving-target case; checks delayed target selection and resistance to locking onto the wrong object.",
+      "review_focus": ["moving target selection", "identity consistency", "far-skier warnings"]
+    },
+    {
+      "id": "gate_occlusion_1575_recovery",
+      "video": "/Users/quan/Documents/石泉/ski/1575_raw.MP4",
+      "preset": "occlusion",
+      "start_frame": 900,
+      "max_frames": 120,
+      "purpose": "Known gate/occlusion window; should preserve the same skier through brief visibility loss.",
+      "review_focus": ["occlusion recovery", "motion-inferred joints", "no identity jump"]
+    },
+    {
+      "id": "indoor_far_qiaobo_day2_targeted",
+      "video": "/Users/quan/Documents/石泉/ski/国庆乔波训练/乔波day2 2.mp4",
+      "preset": "far",
+      "start_frame": 0,
+      "max_frames": 260,
+      "target_point": [650.0, 210.0],
+      "target_frame": 225,
+      "purpose": "Hard indoor far-skier case with a target hint; current baseline has very low pose coverage.",
+      "review_focus": ["target hint behavior", "far-skier recall", "wrong-person rejection"]
+    },
+    {
+      "id": "indoor_highres_qiaobo_day1_standard",
+      "video": "/Users/quan/Documents/石泉/ski/国庆乔波训练/乔波Day1.mp4",
+      "preset": "standard",
+      "start_frame": 0,
+      "max_frames": 600,
+      "target_strategy": "moving",
+      "target_lock_delay_frames": 300,
+      "target_min_displacement_px": 90.0,
+      "target_min_downhill_px": 0.0,
+      "purpose": "High-resolution indoor training case; useful for checking scale, crop quality, and tracking loss.",
+      "review_focus": ["initial detection", "scale handling", "tracking-lost rate"]
+    }
+  ]
+}
