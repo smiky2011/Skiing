@@ -50,9 +50,7 @@
       "start_frame": 0,
       "max_frames": 260,
       "target_point": [650.0, 210.0],
-      "target_frame": 0,
-      "target_region": [0.35, 0.10, 0.88, 0.55],
-      "provisional_target": true,
+      "target_frame": 225,
       "purpose": "Hard indoor far-skier case with a target hint; current baseline has very low pose coverage.",
       "review_focus": ["target hint behavior", "far-skier recall", "wrong-person rejection"]
     },
