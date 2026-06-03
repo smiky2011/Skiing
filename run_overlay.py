@@ -8,13 +8,17 @@ from pathlib import Path
 from ski_pose_overlay import ProcessingSettings, process_video
 
 
-def parse_box(value: str | None) -> tuple[float, float, float, float] | None:
+def parse_rect(value: str | None, name: str) -> tuple[float, float, float, float] | None:
     if not value:
         return None
     parts = [float(part.strip()) for part in value.split(",")]
     if len(parts) != 4:
-        raise argparse.ArgumentTypeError("initial box must be x1,y1,x2,y2")
+        raise argparse.ArgumentTypeError(f"{name} must be x1,y1,x2,y2")
     return tuple(parts)  # type: ignore[return-value]
+
+
+def parse_box(value: str | None) -> tuple[float, float, float, float] | None:
+    return parse_rect(value, "initial box")
 
 
 def parse_point(value: str | None) -> tuple[float, float] | None:
@@ -24,6 +28,10 @@ def parse_point(value: str | None) -> tuple[float, float] | None:
     if len(parts) != 2:
         raise argparse.ArgumentTypeError("target point must be x,y")
     return tuple(parts)  # type: ignore[return-value]
+
+
+def parse_region(value: str | None) -> tuple[float, float, float, float] | None:
+    return parse_rect(value, "target region")
 
 
 def main() -> None:
@@ -49,6 +57,7 @@ def main() -> None:
     parser.add_argument("--initial-box", type=parse_box, default=None, help="Optional x1,y1,x2,y2 target skier box")
     parser.add_argument("--target-point", type=parse_point, default=None, help="Optional x,y target skier hint")
     parser.add_argument("--target-frame", type=int, default=0, help="Frame where target-point applies")
+    parser.add_argument("--target-region", type=parse_region, default=None, help="Optional x1,y1,x2,y2 target acquisition region")
     parser.add_argument(
         "--target-strategy",
         default=None,
@@ -56,6 +65,7 @@ def main() -> None:
         help="first locks immediately; moving waits for a downhill-moving tracklet",
     )
     parser.add_argument("--target-lock-delay-frames", type=int, default=None, help="Minimum frames to observe before moving target lock")
+    parser.add_argument("--provisional-target", action="store_true", help="Draw a moving target candidate before final target lock")
     parser.add_argument("--target-min-frames", type=int, default=None, help="Moving target strategy minimum seen frames")
     parser.add_argument("--target-min-displacement", type=float, default=None, help="Moving target strategy minimum path displacement")
     parser.add_argument("--target-min-downhill", type=float, default=None, help="Moving target strategy minimum downward image motion")
@@ -87,6 +97,7 @@ def main() -> None:
             "motion_inference": True,
             "target_strategy": "first",
             "target_lock_delay_frames": 0,
+            "provisional_target": False,
             "target_min_frames": 5,
             "target_min_displacement_px": 65.0,
             "target_min_downhill_px": 20.0,
@@ -104,6 +115,7 @@ def main() -> None:
             "motion_inference": True,
             "target_strategy": "moving",
             "target_lock_delay_frames": 0,
+            "provisional_target": False,
             "target_min_frames": 5,
             "target_min_displacement_px": 45.0,
             "target_min_downhill_px": 10.0,
@@ -121,6 +133,7 @@ def main() -> None:
             "motion_inference": True,
             "target_strategy": "first",
             "target_lock_delay_frames": 0,
+            "provisional_target": False,
             "target_min_frames": 5,
             "target_min_displacement_px": 65.0,
             "target_min_downhill_px": 20.0,
@@ -146,12 +159,14 @@ def main() -> None:
         initial_box=args.initial_box,
         target_point=args.target_point,
         target_frame=args.target_frame,
+        target_region=args.target_region,
         target_strategy=args.target_strategy if args.target_strategy is not None else preset_defaults["target_strategy"],
         target_lock_delay_frames=(
             args.target_lock_delay_frames
             if args.target_lock_delay_frames is not None
             else preset_defaults["target_lock_delay_frames"]
         ),
+        provisional_target=args.provisional_target or bool(preset_defaults["provisional_target"]),
         target_min_frames=args.target_min_frames if args.target_min_frames is not None else preset_defaults["target_min_frames"],
         target_min_displacement_px=(
             args.target_min_displacement

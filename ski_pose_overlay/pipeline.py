@@ -95,8 +95,10 @@ class ProcessingSettings:
     initial_box: tuple[float, float, float, float] | None = None
     target_point: tuple[float, float] | None = None
     target_frame: int = 0
+    target_region: tuple[float, float, float, float] | None = None
     target_strategy: str = "first"
     target_lock_delay_frames: int = 0
+    provisional_target: bool = False
     target_min_frames: int = 5
     target_min_displacement_px: float = 65.0
     target_min_downhill_px: float = 20.0
@@ -600,6 +602,10 @@ def process_video(
             timestamp = actual_frame_index / fps if fps else 0.0
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             candidates = backend.infer(frame)
+            if active_track_id is None:
+                candidates = filter_candidates_by_region(candidates, settings.target_region, width, height)
+            selected: CandidatePose | None = None
+            selected_is_provisional = False
             if should_delay_target_lock(settings, active_track_id, actual_frame_index):
                 update_track_candidate_stats(pending_track_stats, candidates, actual_frame_index)
                 moving_track_id = None
@@ -607,20 +613,39 @@ def process_video(
                     moving_track_id = choose_moving_track(pending_track_stats, settings)
                 if moving_track_id is not None:
                     active_track_id = moving_track_id
+                elif settings.provisional_target:
+                    provisional_track_id = choose_moving_track(pending_track_stats, settings)
+                    selected = find_candidate_by_track_id(candidates, provisional_track_id)
+                    if selected is None:
+                        candidates = []
+                    else:
+                        selected_is_provisional = True
                 else:
                     candidates = []
-            selected = select_candidate(
-                candidates,
-                active_track_id,
-                prev_bbox,
-                settings.initial_box if actual_frame_index == settings.start_frame else None,
-                settings.target_point,
-                settings.target_frame,
-                actual_frame_index,
-                settings.max_reacquire_distance_ratio,
-                width,
-                height,
-            )
+            elif (
+                settings.provisional_target
+                and active_track_id is None
+                and settings.target_point is not None
+                and actual_frame_index < settings.target_frame
+            ):
+                update_track_candidate_stats(pending_track_stats, candidates, actual_frame_index)
+                provisional_track_id = choose_moving_track(pending_track_stats, settings)
+                selected = find_candidate_by_track_id(candidates, provisional_track_id)
+                selected_is_provisional = selected is not None
+
+            if selected is None:
+                selected = select_candidate(
+                    candidates,
+                    active_track_id,
+                    prev_bbox,
+                    settings.initial_box if actual_frame_index == settings.start_frame else None,
+                    settings.target_point,
+                    settings.target_frame,
+                    actual_frame_index,
+                    settings.max_reacquire_distance_ratio,
+                    width,
+                    height,
+                )
             predicted_box = predict_bbox(prev_bbox, bbox_velocity, width, height)
             if (
                 selected is None
@@ -653,14 +678,24 @@ def process_video(
                 bbox = selected.bbox
                 bbox_conf = selected.bbox_conf
                 track_id = selected.track_id if selected.track_id is not None else active_track_id
-                active_track_id = track_id
-                if bbox is not None:
+                if not selected_is_provisional:
+                    active_track_id = track_id
+                if bbox is not None and not selected_is_provisional:
                     if prev_bbox is not None:
                         bbox_velocity = tuple(float(bbox[i] - prev_bbox[i]) for i in range(4))
                     prev_bbox = bbox
                 frames_with_pose += 1
 
-                if smoother is not None:
+                if selected_is_provisional:
+                    keypoints = raw_keypoints
+                    scores = raw_scores
+                    statuses = [
+                        "observed" if float(score) >= settings.observe_conf else "missing"
+                        for score in scores
+                    ]
+                    candidate_source = f"{selected.source}_provisional"
+                    warnings.append("provisional_target")
+                elif smoother is not None:
                     keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
                 else:
                     keypoints = raw_keypoints
@@ -680,6 +715,8 @@ def process_video(
                 if core_conf < settings.min_draw_conf:
                     frame_status = "low_confidence"
                     low_confidence_frames += 1
+                elif selected_is_provisional:
+                    frame_status = "provisional_target"
                 else:
                     frame_status = "tracking_ok"
             else:
@@ -734,9 +771,10 @@ def process_video(
             )
             writer.write(overlay)
             prev_gray = gray
-            last_keypoints = keypoints.copy()
-            last_scores = scores.copy()
-            last_statuses = list(statuses)
+            if not selected_is_provisional:
+                last_keypoints = keypoints.copy()
+                last_scores = scores.copy()
+                last_statuses = list(statuses)
             frames_out.append(
                 frame_record(
                     actual_frame_index,
@@ -917,6 +955,45 @@ def choose_moving_track(
             best_score = score
             best_id = track_id
     return best_id
+
+
+def find_candidate_by_track_id(
+    candidates: list[CandidatePose], track_id: int | None
+) -> CandidatePose | None:
+    if track_id is None:
+        return None
+    for candidate in candidates:
+        if candidate.track_id == track_id:
+            return candidate
+    return None
+
+
+def filter_candidates_by_region(
+    candidates: list[CandidatePose],
+    region: tuple[float, float, float, float] | None,
+    width: int,
+    height: int,
+) -> list[CandidatePose]:
+    if region is None:
+        return candidates
+    x1, y1, x2, y2 = region_to_pixels(region, width, height)
+    kept = []
+    for candidate in candidates:
+        if candidate.bbox is None:
+            continue
+        cx, cy = bbox_center(candidate.bbox)
+        if x1 <= cx <= x2 and y1 <= cy <= y2:
+            kept.append(candidate)
+    return kept
+
+
+def region_to_pixels(
+    region: tuple[float, float, float, float], width: int, height: int
+) -> tuple[float, float, float, float]:
+    x1, y1, x2, y2 = region
+    if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.0:
+        return (x1 * width, y1 * height, x2 * width, y2 * height)
+    return region
 
 
 def select_candidate(

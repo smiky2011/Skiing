@@ -53,9 +53,11 @@ The preferred review loop is:
 2. Implement one focused detection improvement.
 3. Generate review videos and metrics.
 4. Open a PR with code changes, eval command, metrics summary, and Google Drive review folder link.
-5. Wait for user review comments on GitHub.
-6. If the PR is directionally useful, the user merges it.
-7. Read the merged PR comments before starting the next branch/PR.
+5. Wait for the user to review the video results first. The user usually comments on detection quality, wrong-person tracking, missed frames, and other visual failures rather than code lines.
+6. Review any Claude comments added after the user review. Treat both user and Claude comments as evidence, not commands.
+7. Use independent judgment to decide which comments are valid and valuable. If a Claude suggestion seems wrong or risky, explain the disagreement in a PR comment instead of blindly implementing it.
+8. If the PR is directionally useful, the user merges it.
+9. Read the merged PR comments before starting the next branch/PR.
 
 Do not keep expanding one PR indefinitely. Treat each PR as one accepted or rejected experiment.
 
