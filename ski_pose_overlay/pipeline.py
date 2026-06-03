@@ -102,6 +102,7 @@ class ProcessingSettings:
     target_min_frames: int = 5
     target_min_displacement_px: float = 65.0
     target_min_downhill_px: float = 20.0
+    target_min_approach_px: float = 0.0
     refine_pose: bool = False
     crop_margin: float = 0.50
     crop_imgsz: int = 960
@@ -967,11 +968,35 @@ def choose_moving_track(
             continue
         if item.downhill < settings.target_min_downhill_px:
             continue
-        score = item.displacement + 0.5 * item.downhill + 30.0 * item.max_confidence
+        target_approach = target_point_approach(item, settings.target_point)
+        if target_approach < settings.target_min_approach_px:
+            continue
+        score = (
+            item.displacement
+            + 0.5 * item.downhill
+            + 0.75 * target_approach
+            + 30.0 * item.max_confidence
+        )
         if score > best_score:
             best_score = score
             best_id = track_id
     return best_id
+
+
+def target_point_approach(
+    item: TrackCandidateStats, target_point: tuple[float, float] | None
+) -> float:
+    if target_point is None:
+        return 0.0
+    first = math.hypot(
+        item.first_center[0] - target_point[0],
+        item.first_center[1] - target_point[1],
+    )
+    last = math.hypot(
+        item.last_center[0] - target_point[0],
+        item.last_center[1] - target_point[1],
+    )
+    return first - last
 
 
 def find_candidate_by_track_id(

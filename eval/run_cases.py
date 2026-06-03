@@ -32,6 +32,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "target_min_frames": 5,
         "target_min_displacement_px": 65.0,
         "target_min_downhill_px": 20.0,
+        "target_min_approach_px": 0.0,
     },
     "far": {
         "imgsz": 1920,
@@ -50,6 +51,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "target_min_frames": 5,
         "target_min_displacement_px": 45.0,
         "target_min_downhill_px": 10.0,
+        "target_min_approach_px": 0.0,
     },
     "occlusion": {
         "imgsz": 1600,
@@ -68,6 +70,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "target_min_frames": 5,
         "target_min_displacement_px": 65.0,
         "target_min_downhill_px": 20.0,
+        "target_min_approach_px": 0.0,
     },
 }
 
@@ -122,6 +125,9 @@ def settings_for_case(case: dict[str, Any], full_video: bool = False) -> Process
         ),
         target_min_downhill_px=float(
             case.get("target_min_downhill_px", preset["target_min_downhill_px"])
+        ),
+        target_min_approach_px=float(
+            case.get("target_min_approach_px", preset["target_min_approach_px"])
         ),
         refine_pose=bool(case.get("refine_pose", preset["refine_pose"])),
         crop_imgsz=int(case.get("crop_imgsz", preset["crop_imgsz"])),
