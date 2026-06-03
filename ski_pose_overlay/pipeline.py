@@ -602,10 +602,21 @@ def process_video(
             timestamp = actual_frame_index / fps if fps else 0.0
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             candidates = backend.infer(frame)
+            raw_candidate_count = len(candidates)
             if active_track_id is None:
                 candidates = filter_candidates_by_region(candidates, settings.target_region, width, height)
+            candidate_count = len(candidates)
             selected: CandidatePose | None = None
             selected_is_provisional = False
+            selection_block_reason = (
+                "waiting_for_target_hint"
+                if (
+                    active_track_id is None
+                    and settings.target_point is not None
+                    and actual_frame_index < settings.target_frame
+                )
+                else None
+            )
             if should_delay_target_lock(settings, active_track_id, actual_frame_index):
                 update_track_candidate_stats(pending_track_stats, candidates, actual_frame_index)
                 moving_track_id = None
@@ -785,6 +796,11 @@ def process_video(
                     candidate_source,
                     frame_status,
                     warnings,
+                    raw_candidate_count,
+                    candidate_count,
+                    selection_block_reason,
+                    width,
+                    height,
                     raw_keypoints,
                     raw_scores,
                     keypoints,
@@ -829,6 +845,7 @@ def process_video(
             "low_confidence_rate": safe_ratio(low_confidence_frames, frame_index),
             "tracking_lost_rate": safe_ratio(tracking_lost_frames, frame_index),
         },
+        "diagnostics": summarize_frame_diagnostics(frames_out),
     }
     keypoint_payload = {
         "metadata": metadata,
@@ -1237,6 +1254,11 @@ def frame_record(
     candidate_source: str,
     status: str,
     warnings: list[str],
+    raw_candidate_count: int,
+    candidate_count: int,
+    selection_block_reason: str | None,
+    width: int,
+    height: int,
     raw_keypoints: np.ndarray,
     raw_scores: np.ndarray,
     keypoints: np.ndarray,
@@ -1252,8 +1274,95 @@ def frame_record(
         "candidate_source": candidate_source,
         "status": status,
         "warnings": warnings,
+        "diagnostics": detection_diagnostics(
+            bbox,
+            bbox_conf,
+            status,
+            raw_candidate_count,
+            candidate_count,
+            selection_block_reason,
+            raw_scores,
+            width,
+            height,
+        ),
         "raw_keypoints": keypoint_list(raw_keypoints, raw_scores, None),
         "smoothed_keypoints": keypoint_list(keypoints, scores, statuses),
+    }
+
+
+def detection_diagnostics(
+    bbox: tuple[float, float, float, float] | None,
+    bbox_conf: float,
+    status: str,
+    raw_candidate_count: int,
+    candidate_count: int,
+    selection_block_reason: str | None,
+    scores: np.ndarray,
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    failure_type = None
+    if status in {"no_detection", "tracking_lost"}:
+        failure_type = (
+            selection_block_reason
+            or ("recall_no_candidate" if candidate_count == 0 else "selection_rejected")
+        )
+    elif status == "low_confidence":
+        failure_type = "low_confidence"
+
+    bbox_height = None
+    bbox_area_ratio = None
+    if bbox is not None:
+        bbox_height = max(0.0, float(bbox[3] - bbox[1]))
+        bbox_area_ratio = bbox_area(bbox) / max(float(width * height), 1.0)
+
+    return {
+        "raw_candidate_count": raw_candidate_count,
+        "candidate_count": candidate_count,
+        "selection_block_reason": selection_block_reason,
+        "selected_bbox_height_px": clean_number(bbox_height)
+        if bbox_height is not None
+        else None,
+        "selected_bbox_area_ratio": clean_number(bbox_area_ratio)
+        if bbox_area_ratio is not None
+        else None,
+        "selected_bbox_confidence": round(float(bbox_conf), 5),
+        "selected_core_confidence": round(float(mean_confidence(scores, CORE_JOINTS)), 5),
+        "failure_type": failure_type,
+    }
+
+
+def summarize_frame_diagnostics(frames: list[dict[str, Any]]) -> dict[str, Any]:
+    failure_counts: dict[str, int] = {}
+    raw_candidate_total = 0
+    candidate_total = 0
+    bbox_heights = []
+    for frame in frames:
+        diagnostics = frame.get("diagnostics", {})
+        raw_candidate_total += int(diagnostics.get("raw_candidate_count") or 0)
+        candidate_total += int(diagnostics.get("candidate_count") or 0)
+        failure_type = diagnostics.get("failure_type")
+        if failure_type:
+            failure_counts[str(failure_type)] = failure_counts.get(str(failure_type), 0) + 1
+        height = diagnostics.get("selected_bbox_height_px")
+        if height is not None:
+            bbox_heights.append(float(height))
+
+    frame_count = len(frames)
+    return {
+        "failure_counts": failure_counts,
+        "avg_raw_candidates_per_frame": round(raw_candidate_total / frame_count, 4)
+        if frame_count
+        else 0.0,
+        "avg_candidates_after_filter_per_frame": round(candidate_total / frame_count, 4)
+        if frame_count
+        else 0.0,
+        "avg_selected_bbox_height_px": round(float(np.mean(bbox_heights)), 4)
+        if bbox_heights
+        else None,
+        "min_selected_bbox_height_px": round(float(np.min(bbox_heights)), 4)
+        if bbox_heights
+        else None,
     }
 
 
