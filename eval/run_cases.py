@@ -156,6 +156,11 @@ def run_case(case: dict[str, Any], output_root: Path, full_video: bool = False) 
         settings=settings,
         progress_callback=progress,
     )
+    diagnostics = {}
+    report_path = Path(result.report_json)
+    if report_path.exists():
+        with report_path.open("r", encoding="utf-8") as file:
+            diagnostics = json.load(file).get("diagnostics", {})
 
     summary = {
         "id": case_id,
@@ -176,6 +181,7 @@ def run_case(case: dict[str, Any], output_root: Path, full_video: bool = False) 
         "tracking_lost_rate": safe_ratio(result.tracking_lost_frames, result.frames_processed),
         "low_confidence_rate": safe_ratio(result.low_confidence_frames, result.frames_processed),
         "elapsed_sec": round(result.elapsed_sec, 2),
+        "diagnostics": diagnostics,
         "settings": asdict(settings),
     }
     with (output_dir / "case_summary.json").open("w", encoding="utf-8") as file:
@@ -187,14 +193,18 @@ def write_markdown_summary(summaries: list[dict[str, Any]], path: Path) -> None:
     lines = [
         "# Evaluation Summary",
         "",
-        "| Case | Frames | Pose Coverage | Tracking Lost | Low Confidence | Overlay |",
-        "| --- | ---: | ---: | ---: | ---: | --- |",
+        "| Case | Frames | Pose Coverage | Tracking Lost | Low Confidence | Failure Counts | Overlay |",
+        "| --- | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for item in summaries:
+        failure_counts = item.get("diagnostics", {}).get("failure_counts", {})
+        failure_text = ", ".join(f"{key}:{value}" for key, value in sorted(failure_counts.items()))
+        if not failure_text:
+            failure_text = "-"
         lines.append(
             "| {id} | {frames_processed} | {pose_coverage:.1%} | "
-            "{tracking_lost_rate:.1%} | {low_confidence_rate:.1%} | `{output_video}` |".format(
-                **item
+            "{tracking_lost_rate:.1%} | {low_confidence_rate:.1%} | {failure_text} | `{output_video}` |".format(
+                failure_text=failure_text, **item
             )
         )
     lines.append("")
