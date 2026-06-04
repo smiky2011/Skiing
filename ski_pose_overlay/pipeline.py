@@ -625,17 +625,23 @@ def process_video(
             actual_frame_index = settings.start_frame + frame_index
             timestamp = actual_frame_index / fps if fps else 0.0
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            candidates = backend.infer(frame)
-            raw_candidate_count = len(candidates)
-            if active_track_id is None:
-                candidates = filter_candidates_by_region(candidates, settings.target_region, width, height)
-                candidates = reject_too_small_candidates(candidates, settings, height)
+            raw_candidates = backend.infer(frame)
+            raw_candidate_count = len(raw_candidates)
+            sized_candidates = reject_too_small_candidates(raw_candidates, settings, height)
+            target_candidates = filter_candidates_by_region(
+                sized_candidates, settings.target_region, width, height
+            )
+            update_track_candidate_stats(
+                pending_track_stats, target_candidates, actual_frame_index
+            )
+            candidates = target_candidates if active_track_id is None else sized_candidates
             candidate_count = len(candidates)
             corridor_candidate = nearest_candidate_to_corridor_centerline(
-                candidates, settings.target_region, width, height
+                target_candidates, settings.target_region, width, height
             )
             selected: CandidatePose | None = None
             selected_is_provisional = False
+            selected_is_reacquired = False
             selection_block_reason = (
                 "waiting_for_target_hint"
                 if (
@@ -646,15 +652,18 @@ def process_video(
                 else None
             )
             if should_delay_target_lock(settings, active_track_id, actual_frame_index):
-                update_track_candidate_stats(pending_track_stats, candidates, actual_frame_index)
-                moving_track_id = None
+                moving_candidate = None
                 if actual_frame_index - settings.start_frame >= settings.target_lock_delay_frames:
-                    moving_track_id = choose_moving_track(pending_track_stats, settings, width, height)
-                if moving_track_id is not None:
-                    active_track_id = moving_track_id
+                    moving_candidate = choose_moving_candidate(
+                        target_candidates, pending_track_stats, settings, width, height
+                    )
+                if moving_candidate is not None:
+                    active_track_id = moving_candidate.track_id
+                    selected = moving_candidate
                 elif settings.provisional_target:
-                    provisional_track_id = choose_moving_track(pending_track_stats, settings, width, height)
-                    selected = find_candidate_by_track_id(candidates, provisional_track_id)
+                    selected = choose_moving_candidate(
+                        target_candidates, pending_track_stats, settings, width, height
+                    )
                     if selected is None:
                         candidates = []
                     else:
@@ -667,9 +676,9 @@ def process_video(
                 and settings.target_point is not None
                 and actual_frame_index < settings.target_frame
             ):
-                update_track_candidate_stats(pending_track_stats, candidates, actual_frame_index)
-                provisional_track_id = choose_moving_track(pending_track_stats, settings, width, height)
-                selected = find_candidate_by_track_id(candidates, provisional_track_id)
+                selected = choose_moving_candidate(
+                    target_candidates, pending_track_stats, settings, width, height
+                )
                 selected_is_provisional = selected is not None
 
             if selected is None:
@@ -684,12 +693,19 @@ def process_video(
                     settings.max_reacquire_distance_ratio,
                     width,
                     height,
+                    allow_new_track=not should_gate_new_track(settings, active_track_id),
                 )
+            if selected is None and should_gate_new_track(settings, active_track_id):
+                selected = choose_moving_candidate(
+                    target_candidates, pending_track_stats, settings, width, height
+                )
+                selected_is_reacquired = selected is not None
             predicted_box = predict_bbox(prev_bbox, bbox_velocity, width, height)
             if (
                 selected is None
                 and settings.roi_recovery
                 and predicted_box is not None
+                and not is_too_small_bbox(predicted_box, settings, height)
                 and hasattr(backend, "recover_from_roi")
             ):
                 selected = backend.recover_from_roi(frame, predicted_box, active_track_id)
@@ -719,6 +735,17 @@ def process_video(
                 if bbox is not None and is_too_small_bbox(bbox, settings, height):
                     selected = None
                     warnings.append("skier_too_small_rejected")
+                if (
+                    selected is not None
+                    and should_gate_new_track(settings, active_track_id)
+                    and selected.track_id is not None
+                    and selected.track_id != active_track_id
+                    and not track_passes_moving_gate(
+                        selected.track_id, pending_track_stats, settings, width, height
+                    )
+                ):
+                    selected = None
+                    warnings.append("relock_candidate_rejected")
                 if selected is None:
                     bbox = None
                     bbox_conf = 0.0
@@ -734,6 +761,7 @@ def process_video(
                         and last_keypoints is not None
                         and last_scores is not None
                         and last_statuses is not None
+                        and is_usable_motion_box(predicted_box, settings, height)
                     ):
                         propagated = propagate_keypoints(
                             prev_gray,
@@ -779,6 +807,17 @@ def process_video(
                         ]
                         candidate_source = f"{selected.source}_provisional"
                         warnings.append("provisional_target")
+                    elif selected_is_reacquired:
+                        if smoother is not None:
+                            keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
+                        else:
+                            keypoints = raw_keypoints
+                            scores = raw_scores
+                            statuses = [
+                                "observed" if float(score) >= settings.observe_conf else "missing"
+                                for score in scores
+                            ]
+                        warnings.append("racer_reacquired")
                     elif smoother is not None:
                         keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
                     else:
@@ -811,6 +850,7 @@ def process_video(
                     and last_keypoints is not None
                     and last_scores is not None
                     and last_statuses is not None
+                    and is_usable_motion_box(predicted_box, settings, height)
                 ):
                     propagated = propagate_keypoints(
                         prev_gray,
@@ -1065,6 +1105,49 @@ def choose_moving_track(
     return best_id
 
 
+def choose_moving_candidate(
+    candidates: list[CandidatePose],
+    stats: dict[int, TrackCandidateStats],
+    settings: ProcessingSettings,
+    width: int,
+    height: int,
+) -> CandidatePose | None:
+    present_track_ids = {
+        candidate.track_id
+        for candidate in candidates
+        if candidate.track_id is not None and candidate.bbox is not None
+    }
+    eligible_stats = {
+        track_id: item
+        for track_id, item in stats.items()
+        if track_id in present_track_ids
+    }
+    return find_candidate_by_track_id(
+        candidates, choose_moving_track(eligible_stats, settings, width, height)
+    )
+
+
+def track_passes_moving_gate(
+    track_id: int,
+    stats: dict[int, TrackCandidateStats],
+    settings: ProcessingSettings,
+    width: int,
+    height: int,
+) -> bool:
+    item = stats.get(track_id)
+    if item is None:
+        return False
+    return choose_moving_track({track_id: item}, settings, width, height) == track_id
+
+
+def should_gate_new_track(settings: ProcessingSettings, active_track_id: int | None) -> bool:
+    return (
+        settings.target_strategy == "moving"
+        and active_track_id is not None
+        and settings.target_point is None
+    )
+
+
 def track_centerline_distance(
     item: TrackCandidateStats,
     region: tuple[float, float, float, float] | None,
@@ -1137,6 +1220,12 @@ def is_too_small_bbox(
     return bbox[3] - bbox[1] < max(24.0, settings.too_small_height_ratio * height)
 
 
+def is_usable_motion_box(
+    bbox: tuple[float, float, float, float] | None, settings: ProcessingSettings, height: int
+) -> bool:
+    return bbox is None or not is_too_small_bbox(bbox, settings, height)
+
+
 def nearest_candidate_to_corridor_centerline(
     candidates: list[CandidatePose],
     region: tuple[float, float, float, float] | None,
@@ -1203,6 +1292,7 @@ def select_candidate(
     max_reacquire_distance_ratio: float,
     width: int,
     height: int,
+    allow_new_track: bool = True,
 ) -> CandidatePose | None:
     if not candidates:
         return None
@@ -1219,6 +1309,8 @@ def select_candidate(
                     if center_distance > max_reacquire_distance_ratio * diagonal:
                         continue
                 return candidate
+        if not allow_new_track:
+            return None
 
     reference_box = initial_box or prev_bbox
     best_score = -1.0
