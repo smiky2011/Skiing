@@ -69,6 +69,11 @@ def main() -> None:
     parser.add_argument("--target-min-frames", type=int, default=None, help="Moving target strategy minimum seen frames")
     parser.add_argument("--target-min-displacement", type=float, default=None, help="Moving target strategy minimum path displacement")
     parser.add_argument("--target-min-downhill", type=float, default=None, help="Moving target strategy minimum downward image motion")
+    parser.add_argument("--target-min-downhill-ratio", type=float, default=None, help="Minimum downhill/displacement ratio for moving target lock")
+    parser.add_argument("--target-min-downhill-rate", type=float, default=None, help="Minimum downhill pixels per observed frame for moving target lock")
+    parser.add_argument("--target-max-centerline-distance-ratio", type=float, default=None, help="Maximum distance from target-region centerline as a frame-width ratio")
+    parser.add_argument("--target-min-track-confidence", type=float, default=None, help="Minimum max bbox confidence for moving target lock")
+    parser.add_argument("--target-min-region-progress", type=float, default=None, help="Minimum vertical progress within target region for moving target lock")
     parser.add_argument("--refine-pose", action="store_true", help="Run a second pose pass on the selected skier crop")
     parser.add_argument("--crop-imgsz", type=int, default=None, help="YOLO image size for crop refinement")
     parser.add_argument("--crop-margin", type=float, default=0.50, help="Crop expansion around selected skier")
@@ -101,6 +106,11 @@ def main() -> None:
             "target_min_frames": 5,
             "target_min_displacement_px": 65.0,
             "target_min_downhill_px": 20.0,
+            "target_min_downhill_ratio": 0.0,
+            "target_min_downhill_rate_px": 0.0,
+            "target_max_centerline_distance_ratio": 1.0,
+            "target_min_track_confidence": 0.0,
+            "target_min_region_progress": 0.0,
         },
         "far": {
             "imgsz": 1920,
@@ -119,6 +129,11 @@ def main() -> None:
             "target_min_frames": 5,
             "target_min_displacement_px": 45.0,
             "target_min_downhill_px": 10.0,
+            "target_min_downhill_ratio": 0.0,
+            "target_min_downhill_rate_px": 0.0,
+            "target_max_centerline_distance_ratio": 1.0,
+            "target_min_track_confidence": 0.0,
+            "target_min_region_progress": 0.0,
         },
         "occlusion": {
             "imgsz": 1600,
@@ -137,6 +152,11 @@ def main() -> None:
             "target_min_frames": 5,
             "target_min_displacement_px": 65.0,
             "target_min_downhill_px": 20.0,
+            "target_min_downhill_ratio": 0.0,
+            "target_min_downhill_rate_px": 0.0,
+            "target_max_centerline_distance_ratio": 1.0,
+            "target_min_track_confidence": 0.0,
+            "target_min_region_progress": 0.0,
         },
     }[args.preset]
 
@@ -177,6 +197,31 @@ def main() -> None:
             args.target_min_downhill
             if args.target_min_downhill is not None
             else preset_defaults["target_min_downhill_px"]
+        ),
+        target_min_downhill_ratio=(
+            args.target_min_downhill_ratio
+            if args.target_min_downhill_ratio is not None
+            else preset_defaults["target_min_downhill_ratio"]
+        ),
+        target_min_downhill_rate_px=(
+            args.target_min_downhill_rate
+            if args.target_min_downhill_rate is not None
+            else preset_defaults["target_min_downhill_rate_px"]
+        ),
+        target_max_centerline_distance_ratio=(
+            args.target_max_centerline_distance_ratio
+            if args.target_max_centerline_distance_ratio is not None
+            else preset_defaults["target_max_centerline_distance_ratio"]
+        ),
+        target_min_track_confidence=(
+            args.target_min_track_confidence
+            if args.target_min_track_confidence is not None
+            else preset_defaults["target_min_track_confidence"]
+        ),
+        target_min_region_progress=(
+            args.target_min_region_progress
+            if args.target_min_region_progress is not None
+            else preset_defaults["target_min_region_progress"]
         ),
         refine_pose=args.refine_pose or bool(preset_defaults["refine_pose"]),
         crop_imgsz=args.crop_imgsz if args.crop_imgsz is not None else preset_defaults["crop_imgsz"],
