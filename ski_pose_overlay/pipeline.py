@@ -296,8 +296,13 @@ class YoloPoseBackend:
 
         self.settings = settings
         self.model = YOLO(settings.model)
-        self.refine_model = YOLO(settings.model) if settings.refine_pose else None
-        self.crop_model = YOLO(settings.model) if settings.recall_region_crop else None
+        self.predict_model = (
+            YOLO(settings.model)
+            if settings.refine_pose or settings.recall_region_crop
+            else None
+        )
+        self.refine_model = self.predict_model if settings.refine_pose else None
+        self.crop_model = self.predict_model if settings.recall_region_crop else None
         self.frame_seq = 0
         self.next_crop_track_id = -1
         self.crop_tracks: dict[int, tuple[tuple[float, float], int]] = {}
@@ -353,7 +358,7 @@ class YoloPoseBackend:
                 )
             )
         candidates.extend(self.infer_region_crop(frame))
-        return deduplicate_candidates(candidates)
+        return candidates
 
     def infer_region_crop(self, frame: np.ndarray) -> list[CandidatePose]:
         if (
@@ -439,6 +444,13 @@ class YoloPoseBackend:
         center = bbox_center(bbox)
         best_id: int | None = None
         best_distance = float("inf")
+        stale_ids = [
+            track_id
+            for track_id, (_, last_frame) in self.crop_tracks.items()
+            if self.frame_seq - last_frame > 20
+        ]
+        for track_id in stale_ids:
+            self.crop_tracks.pop(track_id, None)
         for track_id, (last_center, last_frame) in self.crop_tracks.items():
             if self.frame_seq - last_frame > 20:
                 continue
@@ -737,7 +749,7 @@ def process_video(
             actual_frame_index = settings.start_frame + frame_index
             timestamp = actual_frame_index / fps if fps else 0.0
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            raw_candidates = backend.infer(frame)
+            raw_candidates = deduplicate_candidates(backend.infer(frame), active_track_id)
             raw_candidate_count = len(raw_candidates)
             sized_candidates = reject_too_small_candidates(raw_candidates, settings, height)
             target_candidates = filter_candidates_by_region(
@@ -1326,21 +1338,51 @@ def reject_too_small_candidates(
     ]
 
 
-def deduplicate_candidates(candidates: list[CandidatePose]) -> list[CandidatePose]:
+def deduplicate_candidates(
+    candidates: list[CandidatePose], preferred_track_id: int | None = None
+) -> list[CandidatePose]:
     kept: list[CandidatePose] = []
     for candidate in sorted(candidates, key=candidate_quality_score, reverse=True):
         if candidate.bbox is None:
             continue
-        duplicate = False
-        for existing in kept:
+        duplicate_index = None
+        for idx, existing in enumerate(kept):
             if existing.bbox is None:
                 continue
             if bbox_iou(existing.bbox, candidate.bbox) > 0.45:
-                duplicate = True
+                duplicate_index = idx
                 break
-        if not duplicate:
+        if duplicate_index is None:
             kept.append(candidate)
+            continue
+        kept[duplicate_index] = merge_duplicate_candidate(
+            kept[duplicate_index], candidate, preferred_track_id
+        )
     return kept
+
+
+def merge_duplicate_candidate(
+    existing: CandidatePose,
+    candidate: CandidatePose,
+    preferred_track_id: int | None = None,
+) -> CandidatePose:
+    best = (
+        candidate
+        if candidate_quality_score(candidate) > candidate_quality_score(existing)
+        else existing
+    )
+    if preferred_track_id is None or best.track_id == preferred_track_id:
+        return best
+    if existing.track_id != preferred_track_id and candidate.track_id != preferred_track_id:
+        return best
+    return CandidatePose(
+        bbox=best.bbox,
+        bbox_conf=best.bbox_conf,
+        track_id=preferred_track_id,
+        keypoints=best.keypoints,
+        scores=best.scores,
+        source=best.source,
+    )
 
 
 def candidate_quality_score(candidate: CandidatePose) -> float:
