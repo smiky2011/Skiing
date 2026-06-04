@@ -102,6 +102,11 @@ class ProcessingSettings:
     target_min_frames: int = 5
     target_min_displacement_px: float = 65.0
     target_min_downhill_px: float = 20.0
+    target_min_downhill_ratio: float = 0.0
+    target_min_downhill_rate_px: float = 0.0
+    target_max_centerline_distance_ratio: float = 1.0
+    target_min_track_confidence: float = 0.0
+    target_min_region_progress: float = 0.0
     refine_pose: bool = False
     crop_margin: float = 0.50
     crop_imgsz: int = 960
@@ -142,8 +147,15 @@ class TrackCandidateStats:
     frames_seen: int = 1
     max_confidence: float = 0.0
     last_frame: int = 0
+    path_length: float = 0.0
+    downhill_steps: int = 0
 
     def update(self, center: tuple[float, float], confidence: float, frame_index: int) -> None:
+        dx = center[0] - self.last_center[0]
+        dy = center[1] - self.last_center[1]
+        self.path_length += math.hypot(dx, dy)
+        if dy > 0:
+            self.downhill_steps += 1
         self.last_center = center
         self.frames_seen += 1
         self.max_confidence = max(self.max_confidence, float(confidence))
@@ -159,6 +171,18 @@ class TrackCandidateStats:
     @property
     def downhill(self) -> float:
         return self.last_center[1] - self.first_center[1]
+
+    @property
+    def downhill_ratio(self) -> float:
+        return self.downhill / max(self.displacement, 1.0)
+
+    @property
+    def downhill_rate(self) -> float:
+        return self.downhill / max(self.frames_seen - 1, 1)
+
+    @property
+    def downhill_consistency(self) -> float:
+        return self.downhill_steps / max(self.frames_seen - 1, 1)
 
 
 class LowPassFilter:
@@ -605,7 +629,11 @@ def process_video(
             raw_candidate_count = len(candidates)
             if active_track_id is None:
                 candidates = filter_candidates_by_region(candidates, settings.target_region, width, height)
+                candidates = reject_too_small_candidates(candidates, settings, height)
             candidate_count = len(candidates)
+            corridor_candidate = nearest_candidate_to_corridor_centerline(
+                candidates, settings.target_region, width, height
+            )
             selected: CandidatePose | None = None
             selected_is_provisional = False
             selection_block_reason = (
@@ -621,11 +649,11 @@ def process_video(
                 update_track_candidate_stats(pending_track_stats, candidates, actual_frame_index)
                 moving_track_id = None
                 if actual_frame_index - settings.start_frame >= settings.target_lock_delay_frames:
-                    moving_track_id = choose_moving_track(pending_track_stats, settings)
+                    moving_track_id = choose_moving_track(pending_track_stats, settings, width, height)
                 if moving_track_id is not None:
                     active_track_id = moving_track_id
                 elif settings.provisional_target:
-                    provisional_track_id = choose_moving_track(pending_track_stats, settings)
+                    provisional_track_id = choose_moving_track(pending_track_stats, settings, width, height)
                     selected = find_candidate_by_track_id(candidates, provisional_track_id)
                     if selected is None:
                         candidates = []
@@ -640,7 +668,7 @@ def process_video(
                 and actual_frame_index < settings.target_frame
             ):
                 update_track_candidate_stats(pending_track_stats, candidates, actual_frame_index)
-                provisional_track_id = choose_moving_track(pending_track_stats, settings)
+                provisional_track_id = choose_moving_track(pending_track_stats, settings, width, height)
                 selected = find_candidate_by_track_id(candidates, provisional_track_id)
                 selected_is_provisional = selected is not None
 
@@ -688,48 +716,91 @@ def process_video(
                 raw_scores = selected.scores
                 bbox = selected.bbox
                 bbox_conf = selected.bbox_conf
-                track_id = selected.track_id if selected.track_id is not None else active_track_id
-                if not selected_is_provisional:
-                    active_track_id = track_id
-                if bbox is not None and not selected_is_provisional:
-                    if prev_bbox is not None:
-                        bbox_velocity = tuple(float(bbox[i] - prev_bbox[i]) for i in range(4))
-                    prev_bbox = bbox
-                frames_with_pose += 1
-
-                if selected_is_provisional:
-                    keypoints = raw_keypoints
-                    scores = raw_scores
-                    statuses = [
-                        "observed" if float(score) >= settings.observe_conf else "missing"
-                        for score in scores
-                    ]
-                    candidate_source = f"{selected.source}_provisional"
-                    warnings.append("provisional_target")
-                elif smoother is not None:
-                    keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
+                if bbox is not None and is_too_small_bbox(bbox, settings, height):
+                    selected = None
+                    warnings.append("skier_too_small_rejected")
+                if selected is None:
+                    bbox = None
+                    bbox_conf = 0.0
+                    track_id = active_track_id
+                    candidate_source = "none"
+                    frame_status = "tracking_lost" if prev_bbox is not None else "no_detection"
+                    tracking_lost_frames += 1
+                    warnings.append("tracking_lost")
+                    propagated = None
+                    if (
+                        settings.motion_inference
+                        and prev_gray is not None
+                        and last_keypoints is not None
+                        and last_scores is not None
+                        and last_statuses is not None
+                    ):
+                        propagated = propagate_keypoints(
+                            prev_gray,
+                            gray,
+                            last_keypoints,
+                            last_scores,
+                            last_statuses,
+                            settings,
+                        )
+                    if propagated is not None:
+                        raw_keypoints, raw_scores = propagated
+                        if smoother is not None:
+                            keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
+                        else:
+                            keypoints, scores = raw_keypoints, raw_scores
+                        statuses = [
+                            "inferred" if float(score) >= settings.min_draw_conf else "missing"
+                            for score in scores
+                        ]
+                        candidate_source = "motion_inference"
+                        warnings.append("motion_inferred")
+                        if predicted_box is not None:
+                            bbox = predicted_box
+                            bbox_conf = 0.0
+                    elif smoother is not None:
+                        keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
                 else:
-                    keypoints = raw_keypoints
-                    scores = raw_scores
-                    statuses = [
-                        "observed" if float(score) >= settings.observe_conf else "missing"
-                        for score in scores
-                    ]
+                    track_id = selected.track_id if selected.track_id is not None else active_track_id
+                    if not selected_is_provisional:
+                        active_track_id = track_id
+                    if bbox is not None and not selected_is_provisional:
+                        if prev_bbox is not None:
+                            bbox_velocity = tuple(float(bbox[i] - prev_bbox[i]) for i in range(4))
+                        prev_bbox = bbox
+                    frames_with_pose += 1
 
-                core_conf = mean_confidence(scores, CORE_JOINTS)
-                if bbox is not None:
-                    box_height = bbox[3] - bbox[1]
-                    if box_height < max(24.0, settings.too_small_height_ratio * height):
-                        warnings.append("skier_too_small")
-                    elif box_height < settings.far_skier_height_ratio * height:
-                        warnings.append("far_skier")
-                if core_conf < settings.min_draw_conf:
-                    frame_status = "low_confidence"
-                    low_confidence_frames += 1
-                elif selected_is_provisional:
-                    frame_status = "provisional_target"
-                else:
-                    frame_status = "tracking_ok"
+                    if selected_is_provisional:
+                        keypoints = raw_keypoints
+                        scores = raw_scores
+                        statuses = [
+                            "observed" if float(score) >= settings.observe_conf else "missing"
+                            for score in scores
+                        ]
+                        candidate_source = f"{selected.source}_provisional"
+                        warnings.append("provisional_target")
+                    elif smoother is not None:
+                        keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
+                    else:
+                        keypoints = raw_keypoints
+                        scores = raw_scores
+                        statuses = [
+                            "observed" if float(score) >= settings.observe_conf else "missing"
+                            for score in scores
+                        ]
+
+                    core_conf = mean_confidence(scores, CORE_JOINTS)
+                    if bbox is not None:
+                        box_height = bbox[3] - bbox[1]
+                        if box_height < settings.far_skier_height_ratio * height:
+                            warnings.append("far_skier")
+                    if core_conf < settings.min_draw_conf:
+                        frame_status = "low_confidence"
+                        low_confidence_frames += 1
+                    elif selected_is_provisional:
+                        frame_status = "provisional_target"
+                    else:
+                        frame_status = "tracking_ok"
             else:
                 tracking_lost_frames += 1
                 warnings.append("tracking_lost")
@@ -799,6 +870,7 @@ def process_video(
                     raw_candidate_count,
                     candidate_count,
                     selection_block_reason,
+                    corridor_candidate,
                     width,
                     height,
                     raw_keypoints,
@@ -956,22 +1028,67 @@ def update_track_candidate_stats(
 
 
 def choose_moving_track(
-    stats: dict[int, TrackCandidateStats], settings: ProcessingSettings
+    stats: dict[int, TrackCandidateStats], settings: ProcessingSettings, width: int, height: int
 ) -> int | None:
     best_id: int | None = None
     best_score = -1.0
     for track_id, item in stats.items():
         if item.frames_seen < settings.target_min_frames:
             continue
+        if item.max_confidence < settings.target_min_track_confidence:
+            continue
         if item.displacement < settings.target_min_displacement_px:
             continue
         if item.downhill < settings.target_min_downhill_px:
             continue
-        score = item.displacement + 0.5 * item.downhill + 30.0 * item.max_confidence
+        if item.downhill_ratio < settings.target_min_downhill_ratio:
+            continue
+        if item.downhill_rate < settings.target_min_downhill_rate_px:
+            continue
+        centerline_distance = track_centerline_distance(item, settings.target_region, width, height)
+        max_centerline_distance = settings.target_max_centerline_distance_ratio * max(width, 1)
+        if centerline_distance > max_centerline_distance:
+            continue
+        if track_region_progress(item, settings.target_region, width, height) < settings.target_min_region_progress:
+            continue
+        centerline_score = 1.0 - min(1.0, centerline_distance / max(max_centerline_distance, 1.0))
+        displacement_rate = item.displacement / max(item.frames_seen - 1, 1)
+        score = (
+            displacement_rate
+            * max(0.1, item.max_confidence)
+            * max(0.35, item.downhill_consistency)
+            * (0.5 + centerline_score)
+        )
         if score > best_score:
             best_score = score
             best_id = track_id
     return best_id
+
+
+def track_centerline_distance(
+    item: TrackCandidateStats,
+    region: tuple[float, float, float, float] | None,
+    width: int,
+    height: int,
+) -> float:
+    if region is not None:
+        x1, _, x2, _ = region_to_pixels(region, width, height)
+        centerline_x = (x1 + x2) / 2.0
+    else:
+        centerline_x = width / 2.0
+    return abs(item.last_center[0] - centerline_x)
+
+
+def track_region_progress(
+    item: TrackCandidateStats,
+    region: tuple[float, float, float, float] | None,
+    width: int,
+    height: int,
+) -> float:
+    if region is None:
+        return item.last_center[1] / max(float(height), 1.0)
+    _, y1, _, y2 = region_to_pixels(region, width, height)
+    return (item.last_center[1] - y1) / max(y2 - y1, 1.0)
 
 
 def find_candidate_by_track_id(
@@ -1002,6 +1119,68 @@ def filter_candidates_by_region(
         if x1 <= cx <= x2 and y1 <= cy <= y2:
             kept.append(candidate)
     return kept
+
+
+def reject_too_small_candidates(
+    candidates: list[CandidatePose], settings: ProcessingSettings, height: int
+) -> list[CandidatePose]:
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.bbox is not None and not is_too_small_bbox(candidate.bbox, settings, height)
+    ]
+
+
+def is_too_small_bbox(
+    bbox: tuple[float, float, float, float], settings: ProcessingSettings, height: int
+) -> bool:
+    return bbox[3] - bbox[1] < max(24.0, settings.too_small_height_ratio * height)
+
+
+def nearest_candidate_to_corridor_centerline(
+    candidates: list[CandidatePose],
+    region: tuple[float, float, float, float] | None,
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    if not candidates:
+        return {
+            "distance_px": None,
+            "bbox_height_px": None,
+            "bbox_confidence": None,
+            "track_id": None,
+        }
+    if region is not None:
+        x1, _, x2, _ = region_to_pixels(region, width, height)
+        centerline_x = (x1 + x2) / 2.0
+    else:
+        centerline_x = width / 2.0
+
+    best: CandidatePose | None = None
+    best_distance = float("inf")
+    for candidate in candidates:
+        if candidate.bbox is None:
+            continue
+        cx, _ = bbox_center(candidate.bbox)
+        distance = abs(cx - centerline_x)
+        if distance < best_distance:
+            best_distance = distance
+            best = candidate
+
+    if best is None or best.bbox is None:
+        return {
+            "distance_px": None,
+            "bbox_height_px": None,
+            "bbox_confidence": None,
+            "track_id": None,
+        }
+
+    return {
+        "distance_px": clean_number(best_distance),
+        "bbox_height_px": clean_number(best.bbox[3] - best.bbox[1]),
+        "bbox_confidence": round(float(best.bbox_conf), 5),
+        "track_id": best.track_id,
+    }
 
 
 def region_to_pixels(
@@ -1257,6 +1436,7 @@ def frame_record(
     raw_candidate_count: int,
     candidate_count: int,
     selection_block_reason: str | None,
+    corridor_candidate: dict[str, Any],
     width: int,
     height: int,
     raw_keypoints: np.ndarray,
@@ -1281,6 +1461,7 @@ def frame_record(
             raw_candidate_count,
             candidate_count,
             selection_block_reason,
+            corridor_candidate,
             raw_scores,
             width,
             height,
@@ -1297,6 +1478,7 @@ def detection_diagnostics(
     raw_candidate_count: int,
     candidate_count: int,
     selection_block_reason: str | None,
+    corridor_candidate: dict[str, Any],
     scores: np.ndarray,
     width: int,
     height: int,
@@ -1320,6 +1502,7 @@ def detection_diagnostics(
         "raw_candidate_count": raw_candidate_count,
         "candidate_count": candidate_count,
         "selection_block_reason": selection_block_reason,
+        "nearest_corridor_candidate": corridor_candidate,
         "selected_bbox_height_px": clean_number(bbox_height)
         if bbox_height is not None
         else None,
@@ -1337,6 +1520,7 @@ def summarize_frame_diagnostics(frames: list[dict[str, Any]]) -> dict[str, Any]:
     raw_candidate_total = 0
     candidate_total = 0
     bbox_heights = []
+    corridor_distances = []
     for frame in frames:
         diagnostics = frame.get("diagnostics", {})
         raw_candidate_total += int(diagnostics.get("raw_candidate_count") or 0)
@@ -1347,6 +1531,10 @@ def summarize_frame_diagnostics(frames: list[dict[str, Any]]) -> dict[str, Any]:
         height = diagnostics.get("selected_bbox_height_px")
         if height is not None:
             bbox_heights.append(float(height))
+        corridor_candidate = diagnostics.get("nearest_corridor_candidate") or {}
+        distance = corridor_candidate.get("distance_px")
+        if distance is not None:
+            corridor_distances.append(float(distance))
 
     frame_count = len(frames)
     return {
@@ -1362,6 +1550,12 @@ def summarize_frame_diagnostics(frames: list[dict[str, Any]]) -> dict[str, Any]:
         else None,
         "min_selected_bbox_height_px": round(float(np.min(bbox_heights)), 4)
         if bbox_heights
+        else None,
+        "avg_nearest_corridor_candidate_distance_px": round(float(np.mean(corridor_distances)), 4)
+        if corridor_distances
+        else None,
+        "min_nearest_corridor_candidate_distance_px": round(float(np.min(corridor_distances)), 4)
+        if corridor_distances
         else None,
     }
 
