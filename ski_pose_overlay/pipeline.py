@@ -115,6 +115,11 @@ class ProcessingSettings:
     max_reacquire_distance_ratio: float = 0.18
     roi_recovery: bool = True
     motion_inference: bool = True
+    recall_region_crop: bool = False
+    recall_crop_upscale: float = 2.0
+    recall_crop_imgsz: int = 1920
+    recall_crop_conf: float | None = None
+    recall_crop_track_distance_px: float = 140.0
 
 
 @dataclass
@@ -292,8 +297,13 @@ class YoloPoseBackend:
         self.settings = settings
         self.model = YOLO(settings.model)
         self.refine_model = YOLO(settings.model) if settings.refine_pose else None
+        self.crop_model = YOLO(settings.model) if settings.recall_region_crop else None
+        self.frame_seq = 0
+        self.next_crop_track_id = -1
+        self.crop_tracks: dict[int, tuple[tuple[float, float], int]] = {}
 
     def infer(self, frame: np.ndarray) -> list[CandidatePose]:
+        self.frame_seq += 1
         kwargs: dict[str, Any] = {
             "conf": self.settings.conf,
             "imgsz": self.settings.imgsz,
@@ -306,13 +316,13 @@ class YoloPoseBackend:
 
         results = self.model.track(frame, **kwargs)
         if not results:
-            return []
+            return self.infer_region_crop(frame)
 
         result = results[0]
         boxes = result.boxes
         keypoints = result.keypoints
         if boxes is None or keypoints is None or len(boxes) == 0:
-            return []
+            return self.infer_region_crop(frame)
 
         xyxy = boxes.xyxy.detach().cpu().numpy()
         confs = boxes.conf.detach().cpu().numpy() if boxes.conf is not None else np.ones(len(xyxy))
@@ -342,7 +352,109 @@ class YoloPoseBackend:
                     source="detector",
                 )
             )
+        candidates.extend(self.infer_region_crop(frame))
+        return deduplicate_candidates(candidates)
+
+    def infer_region_crop(self, frame: np.ndarray) -> list[CandidatePose]:
+        if (
+            self.crop_model is None
+            or not self.settings.recall_region_crop
+            or self.settings.target_region is None
+        ):
+            return []
+
+        height, width = frame.shape[:2]
+        x1, y1, x2, y2 = region_to_pixels(self.settings.target_region, width, height)
+        x1_i = max(0, int(math.floor(x1)))
+        y1_i = max(0, int(math.floor(y1)))
+        x2_i = min(width, int(math.ceil(x2)))
+        y2_i = min(height, int(math.ceil(y2)))
+        if x2_i <= x1_i or y2_i <= y1_i:
+            return []
+
+        crop = frame[y1_i:y2_i, x1_i:x2_i]
+        if crop.size == 0:
+            return []
+
+        scale = max(1.0, float(self.settings.recall_crop_upscale))
+        infer_image = (
+            cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            if scale > 1.0
+            else crop
+        )
+        kwargs: dict[str, Any] = {
+            "conf": (
+                self.settings.recall_crop_conf
+                if self.settings.recall_crop_conf is not None
+                else max(0.01, min(self.settings.conf, 0.04))
+            ),
+            "imgsz": self.settings.recall_crop_imgsz,
+            "verbose": False,
+        }
+        if self.settings.device:
+            kwargs["device"] = self.settings.device
+
+        results = self.crop_model.predict(infer_image, **kwargs)
+        if not results:
+            return []
+
+        result = results[0]
+        boxes = result.boxes
+        keypoints = result.keypoints
+        if boxes is None or keypoints is None or len(boxes) == 0:
+            return []
+
+        xyxy = boxes.xyxy.detach().cpu().numpy()
+        confs = boxes.conf.detach().cpu().numpy() if boxes.conf is not None else np.ones(len(xyxy))
+        kpt_data = keypoints.data.detach().cpu().numpy()
+        candidates: list[CandidatePose] = []
+        for idx, box in enumerate(xyxy):
+            mapped_box = box.astype(np.float32) / scale
+            mapped_box[[0, 2]] += x1_i
+            mapped_box[[1, 3]] += y1_i
+
+            data = kpt_data[idx]
+            points = data[:, :2].astype(np.float32) / scale
+            points[:, 0] += x1_i
+            points[:, 1] += y1_i
+            scores = (
+                data[:, 2].astype(np.float32)
+                if data.shape[1] >= 3
+                else np.ones(len(COCO_KEYPOINTS), dtype=np.float32)
+            )
+            bbox = tuple(float(v) for v in clip_bbox(tuple(float(v) for v in mapped_box), width, height))
+            candidates.append(
+                CandidatePose(
+                    bbox=bbox,
+                    bbox_conf=float(confs[idx]),
+                    track_id=self.assign_crop_track_id(bbox),
+                    keypoints=points,
+                    scores=scores,
+                    source="region_crop",
+                )
+            )
         return candidates
+
+    def assign_crop_track_id(self, bbox: tuple[float, float, float, float]) -> int:
+        center = bbox_center(bbox)
+        best_id: int | None = None
+        best_distance = float("inf")
+        for track_id, (last_center, last_frame) in self.crop_tracks.items():
+            if self.frame_seq - last_frame > 20:
+                continue
+            distance = math.hypot(center[0] - last_center[0], center[1] - last_center[1])
+            if distance < best_distance:
+                best_distance = distance
+                best_id = track_id
+
+        if (
+            best_id is None
+            or best_distance > float(self.settings.recall_crop_track_distance_px)
+        ):
+            best_id = self.next_crop_track_id
+            self.next_crop_track_id -= 1
+        self.crop_tracks[best_id] = (center, self.frame_seq)
+        return best_id
 
     def refine(self, frame: np.ndarray, candidate: CandidatePose) -> CandidatePose:
         if self.refine_model is None or candidate.bbox is None:
@@ -1212,6 +1324,27 @@ def reject_too_small_candidates(
         for candidate in candidates
         if candidate.bbox is not None and not is_too_small_bbox(candidate.bbox, settings, height)
     ]
+
+
+def deduplicate_candidates(candidates: list[CandidatePose]) -> list[CandidatePose]:
+    kept: list[CandidatePose] = []
+    for candidate in sorted(candidates, key=candidate_quality_score, reverse=True):
+        if candidate.bbox is None:
+            continue
+        duplicate = False
+        for existing in kept:
+            if existing.bbox is None:
+                continue
+            if bbox_iou(existing.bbox, candidate.bbox) > 0.45:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(candidate)
+    return kept
+
+
+def candidate_quality_score(candidate: CandidatePose) -> float:
+    return float(candidate.bbox_conf) + 0.35 * mean_confidence(candidate.scores, CORE_JOINTS)
 
 
 def is_too_small_bbox(

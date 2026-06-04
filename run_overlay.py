@@ -86,6 +86,10 @@ def main() -> None:
     parser.add_argument("--no-smooth", action="store_true", help="Disable temporal smoothing")
     parser.add_argument("--no-roi-recovery", action="store_true", help="Disable predicted-crop recovery")
     parser.add_argument("--no-motion-inference", action="store_true", help="Disable optical-flow inferred joints")
+    parser.add_argument("--recall-region-crop", action="store_true", help="Run an extra upsampled target-region detection pass")
+    parser.add_argument("--recall-crop-upscale", type=float, default=None, help="Scale factor for recall region crop inference")
+    parser.add_argument("--recall-crop-imgsz", type=int, default=None, help="YOLO image size for recall crop inference")
+    parser.add_argument("--recall-crop-conf", type=float, default=None, help="Confidence threshold for recall crop inference")
     args = parser.parse_args()
 
     preset_defaults = {
@@ -100,6 +104,10 @@ def main() -> None:
             "refine_pose": False,
             "roi_recovery": True,
             "motion_inference": True,
+            "recall_region_crop": False,
+            "recall_crop_upscale": 2.0,
+            "recall_crop_imgsz": 1920,
+            "recall_crop_conf": None,
             "target_strategy": "first",
             "target_lock_delay_frames": 0,
             "provisional_target": False,
@@ -123,6 +131,10 @@ def main() -> None:
             "refine_pose": True,
             "roi_recovery": True,
             "motion_inference": True,
+            "recall_region_crop": False,
+            "recall_crop_upscale": 2.0,
+            "recall_crop_imgsz": 1920,
+            "recall_crop_conf": None,
             "target_strategy": "moving",
             "target_lock_delay_frames": 0,
             "provisional_target": False,
@@ -146,6 +158,10 @@ def main() -> None:
             "refine_pose": True,
             "roi_recovery": True,
             "motion_inference": True,
+            "recall_region_crop": False,
+            "recall_crop_upscale": 2.0,
+            "recall_crop_imgsz": 1920,
+            "recall_crop_conf": None,
             "target_strategy": "first",
             "target_lock_delay_frames": 0,
             "provisional_target": False,
@@ -228,6 +244,22 @@ def main() -> None:
         crop_margin=args.crop_margin,
         roi_recovery=bool(preset_defaults["roi_recovery"]) and not args.no_roi_recovery,
         motion_inference=bool(preset_defaults["motion_inference"]) and not args.no_motion_inference,
+        recall_region_crop=args.recall_region_crop or bool(preset_defaults["recall_region_crop"]),
+        recall_crop_upscale=(
+            args.recall_crop_upscale
+            if args.recall_crop_upscale is not None
+            else preset_defaults["recall_crop_upscale"]
+        ),
+        recall_crop_imgsz=(
+            args.recall_crop_imgsz
+            if args.recall_crop_imgsz is not None
+            else preset_defaults["recall_crop_imgsz"]
+        ),
+        recall_crop_conf=(
+            args.recall_crop_conf
+            if args.recall_crop_conf is not None
+            else preset_defaults["recall_crop_conf"]
+        ),
     )
 
     def progress(frame: int, total: int) -> None:
