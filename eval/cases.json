@@ -52,8 +52,14 @@
       "preset": "far",
       "start_frame": 0,
       "max_frames": 260,
+      "target_region": [0.22, 0.10, 0.82, 0.58],
       "target_point": [650.0, 210.0],
       "target_frame": 225,
+      "recall_region_crop": true,
+      "recall_crop_upscale": 2.5,
+      "recall_crop_imgsz": 1920,
+      "recall_crop_conf": 0.015,
+      "too_small_height_ratio": 0.04,
       "purpose": "Hard indoor far-skier case with a target hint; current baseline has very low pose coverage.",
       "review_focus": ["target hint behavior", "far-skier recall", "wrong-person rejection"]
     },
@@ -74,6 +80,11 @@
       "target_max_centerline_distance_ratio": 0.14,
       "target_min_track_confidence": 0.65,
       "target_min_region_progress": 0.35,
+      "recall_region_crop": true,
+      "recall_crop_upscale": 2.5,
+      "recall_crop_imgsz": 1920,
+      "recall_crop_conf": 0.015,
+      "too_small_height_ratio": 0.04,
       "purpose": "High-resolution indoor training case; useful for checking scale, crop quality, and tracking loss.",
       "review_focus": ["initial detection", "scale handling", "tracking-lost rate"]
     }

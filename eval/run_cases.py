@@ -26,6 +26,10 @@ PRESETS: dict[str, dict[str, Any]] = {
         "refine_pose": False,
         "roi_recovery": True,
         "motion_inference": True,
+        "recall_region_crop": False,
+        "recall_crop_upscale": 2.0,
+        "recall_crop_imgsz": 1920,
+        "recall_crop_conf": None,
         "target_strategy": "first",
         "target_lock_delay_frames": 0,
         "provisional_target": False,
@@ -49,6 +53,10 @@ PRESETS: dict[str, dict[str, Any]] = {
         "refine_pose": True,
         "roi_recovery": True,
         "motion_inference": True,
+        "recall_region_crop": False,
+        "recall_crop_upscale": 2.0,
+        "recall_crop_imgsz": 1920,
+        "recall_crop_conf": None,
         "target_strategy": "moving",
         "target_lock_delay_frames": 0,
         "provisional_target": False,
@@ -72,6 +80,10 @@ PRESETS: dict[str, dict[str, Any]] = {
         "refine_pose": True,
         "roi_recovery": True,
         "motion_inference": True,
+        "recall_region_crop": False,
+        "recall_crop_upscale": 2.0,
+        "recall_crop_imgsz": 1920,
+        "recall_crop_conf": None,
         "target_strategy": "first",
         "target_lock_delay_frames": 0,
         "provisional_target": False,
@@ -159,8 +171,18 @@ def settings_for_case(case: dict[str, Any], full_video: bool = False) -> Process
         refine_pose=bool(case.get("refine_pose", preset["refine_pose"])),
         crop_imgsz=int(case.get("crop_imgsz", preset["crop_imgsz"])),
         crop_margin=float(case.get("crop_margin", 0.50)),
+        too_small_height_ratio=float(case.get("too_small_height_ratio", 0.08)),
+        far_skier_height_ratio=float(case.get("far_skier_height_ratio", 0.14)),
         roi_recovery=bool(case.get("roi_recovery", preset["roi_recovery"])),
         motion_inference=bool(case.get("motion_inference", preset["motion_inference"])),
+        recall_region_crop=bool(case.get("recall_region_crop", preset["recall_region_crop"])),
+        recall_crop_upscale=float(case.get("recall_crop_upscale", preset["recall_crop_upscale"])),
+        recall_crop_imgsz=int(case.get("recall_crop_imgsz", preset["recall_crop_imgsz"])),
+        recall_crop_conf=(
+            float(case["recall_crop_conf"])
+            if case.get("recall_crop_conf") is not None
+            else preset["recall_crop_conf"]
+        ),
     )
 
 
