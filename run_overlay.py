@@ -66,6 +66,7 @@ def main() -> None:
     )
     parser.add_argument("--target-lock-delay-frames", type=int, default=None, help="Minimum frames to observe before moving target lock")
     parser.add_argument("--provisional-target", action="store_true", help="Draw a moving target candidate before final target lock")
+    parser.add_argument("--early-provisional-target", action="store_true", help="Draw a relaxed nearest-corridor provisional target before final moving lock")
     parser.add_argument("--target-min-frames", type=int, default=None, help="Moving target strategy minimum seen frames")
     parser.add_argument("--target-min-displacement", type=float, default=None, help="Moving target strategy minimum path displacement")
     parser.add_argument("--target-min-downhill", type=float, default=None, help="Moving target strategy minimum downward image motion")
@@ -111,6 +112,7 @@ def main() -> None:
             "target_strategy": "first",
             "target_lock_delay_frames": 0,
             "provisional_target": False,
+            "early_provisional_target": False,
             "target_min_frames": 5,
             "target_min_displacement_px": 65.0,
             "target_min_downhill_px": 20.0,
@@ -138,6 +140,7 @@ def main() -> None:
             "target_strategy": "moving",
             "target_lock_delay_frames": 0,
             "provisional_target": False,
+            "early_provisional_target": False,
             "target_min_frames": 5,
             "target_min_displacement_px": 45.0,
             "target_min_downhill_px": 10.0,
@@ -165,6 +168,7 @@ def main() -> None:
             "target_strategy": "first",
             "target_lock_delay_frames": 0,
             "provisional_target": False,
+            "early_provisional_target": False,
             "target_min_frames": 5,
             "target_min_displacement_px": 65.0,
             "target_min_downhill_px": 20.0,
@@ -202,7 +206,14 @@ def main() -> None:
             if args.target_lock_delay_frames is not None
             else preset_defaults["target_lock_delay_frames"]
         ),
-        provisional_target=args.provisional_target or bool(preset_defaults["provisional_target"]),
+        provisional_target=(
+            args.provisional_target
+            or args.early_provisional_target
+            or bool(preset_defaults["provisional_target"])
+        ),
+        early_provisional_target=(
+            args.early_provisional_target or bool(preset_defaults["early_provisional_target"])
+        ),
         target_min_frames=args.target_min_frames if args.target_min_frames is not None else preset_defaults["target_min_frames"],
         target_min_displacement_px=(
             args.target_min_displacement

@@ -33,6 +33,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "target_strategy": "first",
         "target_lock_delay_frames": 0,
         "provisional_target": False,
+        "early_provisional_target": False,
         "target_min_frames": 5,
         "target_min_displacement_px": 65.0,
         "target_min_downhill_px": 20.0,
@@ -60,6 +61,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "target_strategy": "moving",
         "target_lock_delay_frames": 0,
         "provisional_target": False,
+        "early_provisional_target": False,
         "target_min_frames": 5,
         "target_min_displacement_px": 45.0,
         "target_min_downhill_px": 10.0,
@@ -87,6 +89,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "target_strategy": "first",
         "target_lock_delay_frames": 0,
         "provisional_target": False,
+        "early_provisional_target": False,
         "target_min_frames": 5,
         "target_min_displacement_px": 65.0,
         "target_min_downhill_px": 20.0,
@@ -143,6 +146,9 @@ def settings_for_case(case: dict[str, Any], full_video: bool = False) -> Process
             case.get("target_lock_delay_frames", preset["target_lock_delay_frames"])
         ),
         provisional_target=bool(case.get("provisional_target", preset["provisional_target"])),
+        early_provisional_target=bool(
+            case.get("early_provisional_target", preset["early_provisional_target"])
+        ),
         target_min_frames=int(case.get("target_min_frames", preset["target_min_frames"])),
         target_min_displacement_px=float(
             case.get("target_min_displacement_px", preset["target_min_displacement_px"])
