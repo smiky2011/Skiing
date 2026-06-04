@@ -120,6 +120,12 @@ class ProcessingSettings:
     recall_crop_imgsz: int = 1920
     recall_crop_conf: float | None = None
     recall_crop_track_distance_px: float = 140.0
+    locked_max_jump_px: float = 240.0
+    locked_max_jump_height_ratio: float = 0.90
+    locked_switch_gap_frames: int = 8
+    locked_switch_confirm_frames: int = 3
+    roi_recovery_max_jump_px: float = 180.0
+    roi_recovery_max_jump_height_ratio: float = 0.90
 
 
 @dataclass
@@ -723,6 +729,9 @@ def process_video(
     last_keypoints: np.ndarray | None = None
     last_scores: np.ndarray | None = None
     last_statuses: list[str] | None = None
+    locked_gap_frames = 0
+    switch_challenger_id: int | None = None
+    switch_challenger_frames = 0
     tracking_lost_frames = 0
     low_confidence_frames = 0
     frames_with_pose = 0
@@ -766,6 +775,7 @@ def process_video(
             selected: CandidatePose | None = None
             selected_is_provisional = False
             selected_is_reacquired = False
+            switch_challenger_seen = False
             selection_block_reason = (
                 "waiting_for_target_hint"
                 if (
@@ -856,6 +866,24 @@ def process_video(
                 raw_scores = selected.scores
                 bbox = selected.bbox
                 bbox_conf = selected.bbox_conf
+                if (
+                    selected.source != "roi_recovery"
+                    and settings.recall_region_crop
+                    and should_gate_new_track(settings, active_track_id)
+                    and not selected_is_provisional
+                    and is_locked_motion_outlier(selected.bbox, prev_bbox, predicted_box, settings)
+                ):
+                    selected = None
+                    warnings.append("locked_motion_outlier_rejected")
+                if (
+                    selected is not None
+                    and selected.source == "roi_recovery"
+                    and settings.recall_region_crop
+                    and should_gate_new_track(settings, active_track_id)
+                    and is_roi_recovery_outlier(selected.bbox, predicted_box, settings)
+                ):
+                    selected = None
+                    warnings.append("roi_recovery_jump_rejected")
                 if bbox is not None and is_too_small_bbox(bbox, settings, height):
                     selected = None
                     warnings.append("skier_too_small_rejected")
@@ -870,6 +898,23 @@ def process_video(
                 ):
                     selected = None
                     warnings.append("relock_candidate_rejected")
+                if (
+                    selected is not None
+                    and should_gate_new_track(settings, active_track_id)
+                    and selected.track_id is not None
+                    and selected.track_id != active_track_id
+                ):
+                    switch_challenger_seen = True
+                    if selected.track_id == switch_challenger_id:
+                        switch_challenger_frames += 1
+                    else:
+                        switch_challenger_id = selected.track_id
+                        switch_challenger_frames = 1
+                    if not should_accept_locked_switch(
+                        locked_gap_frames, switch_challenger_frames, settings
+                    ):
+                        selected = None
+                        warnings.append("track_switch_deferred")
                 if selected is None:
                     bbox = None
                     bbox_conf = 0.0
@@ -920,6 +965,10 @@ def process_video(
                         if prev_bbox is not None:
                             bbox_velocity = tuple(float(bbox[i] - prev_bbox[i]) for i in range(4))
                         prev_bbox = bbox
+                    if not selected_is_provisional:
+                        locked_gap_frames = 0
+                        switch_challenger_id = None
+                        switch_challenger_frames = 0
                     frames_with_pose += 1
 
                     if selected_is_provisional:
@@ -1001,6 +1050,16 @@ def process_video(
                         bbox_conf = 0.0
                 elif smoother is not None:
                     keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
+
+            if (
+                active_track_id is not None
+                and not selected_is_provisional
+                and frame_status not in {"tracking_ok", "low_confidence"}
+            ):
+                locked_gap_frames += 1
+                if not switch_challenger_seen:
+                    switch_challenger_id = None
+                    switch_challenger_frames = 0
 
             overlay = render_overlay(
                 frame,
@@ -1399,6 +1458,69 @@ def is_usable_motion_box(
     bbox: tuple[float, float, float, float] | None, settings: ProcessingSettings, height: int
 ) -> bool:
     return bbox is None or not is_too_small_bbox(bbox, settings, height)
+
+
+def should_accept_locked_switch(
+    locked_gap_frames: int, challenger_frames: int, settings: ProcessingSettings
+) -> bool:
+    return (
+        locked_gap_frames >= settings.locked_switch_gap_frames
+        and challenger_frames >= settings.locked_switch_confirm_frames
+    )
+
+
+def is_locked_motion_outlier(
+    bbox: tuple[float, float, float, float] | None,
+    prev_bbox: tuple[float, float, float, float] | None,
+    predicted_box: tuple[float, float, float, float] | None,
+    settings: ProcessingSettings,
+) -> bool:
+    if bbox is None:
+        return False
+    if prev_bbox is not None and is_upward_shrinking_jump(prev_bbox, bbox):
+        return True
+    if predicted_box is None:
+        return False
+    return bbox_center_distance(predicted_box, bbox) > locked_motion_jump_limit(
+        predicted_box,
+        settings.locked_max_jump_px,
+        settings.locked_max_jump_height_ratio,
+    )
+
+
+def is_roi_recovery_outlier(
+    bbox: tuple[float, float, float, float] | None,
+    predicted_box: tuple[float, float, float, float] | None,
+    settings: ProcessingSettings,
+) -> bool:
+    if bbox is None or predicted_box is None:
+        return False
+    return bbox_center_distance(predicted_box, bbox) > locked_motion_jump_limit(
+        predicted_box,
+        settings.roi_recovery_max_jump_px,
+        settings.roi_recovery_max_jump_height_ratio,
+    )
+
+
+def locked_motion_jump_limit(
+    reference_box: tuple[float, float, float, float],
+    min_px: float,
+    height_ratio: float,
+) -> float:
+    box_height = max(1.0, reference_box[3] - reference_box[1])
+    return max(min_px, height_ratio * box_height)
+
+
+def is_upward_shrinking_jump(
+    prev_bbox: tuple[float, float, float, float],
+    bbox: tuple[float, float, float, float],
+) -> bool:
+    _, prev_cy = bbox_center(prev_bbox)
+    _, cy = bbox_center(bbox)
+    prev_height = max(1.0, prev_bbox[3] - prev_bbox[1])
+    height = max(1.0, bbox[3] - bbox[1])
+    upward_jump = prev_cy - cy
+    return upward_jump > max(70.0, 0.28 * prev_height) and height < 0.85 * prev_height
 
 
 def nearest_candidate_to_corridor_centerline(
