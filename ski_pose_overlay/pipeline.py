@@ -5,7 +5,7 @@ import math
 import shutil
 import subprocess
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -771,11 +771,17 @@ def process_video(
             candidates = target_candidates if active_track_id is None else sized_candidates
             candidate_count = len(candidates)
             corridor_candidate = nearest_candidate_to_corridor_centerline(
-                target_candidates, settings.target_region, width, height
+                target_candidates,
+                settings.target_region,
+                width,
+                height,
+                pending_track_stats,
+                settings,
             )
             selected: CandidatePose | None = None
             selected_is_provisional = False
             selected_is_reacquired = False
+            selected_active_skier_score: float | None = None
             switch_challenger_seen = False
             selection_block_reason = (
                 "waiting_for_target_hint"
@@ -797,7 +803,7 @@ def process_video(
                     selected = moving_candidate
                 elif settings.provisional_target:
                     if settings.early_provisional_target:
-                        selected = choose_provisional_moving_candidate(
+                        selected = choose_active_skier_candidate(
                             target_candidates, pending_track_stats, settings, width, height
                         )
                     else:
@@ -808,6 +814,9 @@ def process_video(
                         candidates = []
                     else:
                         selected_is_provisional = True
+                        selected_active_skier_score = candidate_active_skier_score(
+                            selected, pending_track_stats, settings, width, height
+                        )
                 else:
                     candidates = []
             elif (
@@ -820,6 +829,10 @@ def process_video(
                     target_candidates, pending_track_stats, settings, width, height
                 )
                 selected_is_provisional = selected is not None
+                if selected is not None:
+                    selected_active_skier_score = candidate_active_skier_score(
+                        selected, pending_track_stats, settings, width, height
+                    )
 
             if selected is None:
                 selected = select_candidate(
@@ -1101,6 +1114,7 @@ def process_video(
                     candidate_count,
                     selection_block_reason,
                     corridor_candidate,
+                    selected_active_skier_score,
                     width,
                     height,
                     raw_keypoints,
@@ -1324,18 +1338,78 @@ def choose_provisional_moving_candidate(
     width: int,
     height: int,
 ) -> CandidatePose | None:
-    relaxed_settings = replace(
-        settings,
-        target_min_track_confidence=0.0,
-        target_min_region_progress=0.0,
+    return choose_active_skier_candidate(candidates, stats, settings, width, height)
+
+
+def choose_active_skier_candidate(
+    candidates: list[CandidatePose],
+    stats: dict[int, TrackCandidateStats],
+    settings: ProcessingSettings,
+    width: int,
+    height: int,
+) -> CandidatePose | None:
+    best: CandidatePose | None = None
+    best_score = -float("inf")
+    for candidate in candidates:
+        score = candidate_active_skier_score(candidate, stats, settings, width, height)
+        if score > best_score:
+            best = candidate
+            best_score = score
+    return best
+
+
+def candidate_active_skier_score(
+    candidate: CandidatePose,
+    stats: dict[int, TrackCandidateStats],
+    settings: ProcessingSettings,
+    width: int,
+    height: int,
+) -> float:
+    if candidate.bbox is None:
+        return -float("inf")
+
+    item = stats.get(candidate.track_id) if candidate.track_id is not None else None
+    centerline_distance = candidate_centerline_distance(
+        candidate, settings.target_region, width, height
     )
-    moving_candidate = choose_moving_candidate(
-        candidates, stats, relaxed_settings, width, height
+    max_centerline_distance = max(
+        settings.target_max_centerline_distance_ratio * max(width, 1),
+        1.0,
     )
-    if moving_candidate is not None:
-        return moving_candidate
-    return nearest_candidate_to_corridor(
-        candidates, settings.target_region, width, height
+    centerline_score = 1.0 - min(1.0, centerline_distance / max_centerline_distance)
+    confidence_score = clamp01(candidate.bbox_conf / 0.85)
+    height_score = candidate_height_score(candidate.bbox, settings, height)
+    stance_width_score = bbox_width_score(candidate.bbox)
+    pose_score = skiing_pose_score(candidate, settings)
+
+    if item is None:
+        motion_score = 0.0
+        progress_score = 0.0
+    else:
+        displacement_score = clamp01(
+            item.displacement / max(settings.target_min_displacement_px, 1.0)
+        )
+        downhill_rate_score = clamp01(item.downhill_rate / 3.0)
+        downhill_ratio_score = clamp01(item.downhill_ratio)
+        consistency_score = clamp01(item.downhill_consistency)
+        motion_score = (
+            0.35 * downhill_rate_score
+            + 0.30 * downhill_ratio_score
+            + 0.20 * consistency_score
+            + 0.15 * displacement_score
+        )
+        progress_score = clamp01(track_region_progress(item, settings.target_region, width, height))
+
+    standing_penalty = standing_candidate_penalty(candidate, motion_score, settings)
+    return (
+        1.35 * motion_score
+        + 1.10 * centerline_score
+        + 0.95 * pose_score
+        + 0.45 * stance_width_score
+        + 0.45 * confidence_score
+        + 0.30 * height_score
+        + 0.20 * progress_score
+        - standing_penalty
     )
 
 
@@ -1552,11 +1626,161 @@ def is_upward_shrinking_jump(
     return upward_jump > max(70.0, 0.28 * prev_height) and height < 0.85 * prev_height
 
 
+def candidate_centerline_distance(
+    candidate: CandidatePose,
+    region: tuple[float, float, float, float] | None,
+    width: int,
+    height: int,
+) -> float:
+    if candidate.bbox is None:
+        return float("inf")
+    centerline_x = corridor_centerline_x(region, width, height)
+    cx, _ = bbox_center(candidate.bbox)
+    return abs(cx - centerline_x)
+
+
+def candidate_height_score(
+    bbox: tuple[float, float, float, float],
+    settings: ProcessingSettings,
+    height: int,
+) -> float:
+    box_height = max(0.0, bbox[3] - bbox[1])
+    minimum_height = max(24.0, settings.too_small_height_ratio * height)
+    useful_height = max(settings.far_skier_height_ratio * height, minimum_height + 1.0)
+    return clamp01((box_height - minimum_height) / max(useful_height - minimum_height, 1.0))
+
+
+def skiing_pose_score(candidate: CandidatePose, settings: ProcessingSettings) -> float:
+    if candidate.bbox is None:
+        return 0.0
+
+    lower_conf = mean_confidence(candidate.scores, [11, 12, 13, 14, 15, 16])
+    if lower_conf < settings.observe_conf * 0.6:
+        return 0.20 * mean_confidence(candidate.scores, CORE_JOINTS)
+
+    left_knee_score = knee_bend_score(candidate, 11, 13, 15, settings)
+    right_knee_score = knee_bend_score(candidate, 12, 14, 16, settings)
+    knee_scores = [score for score in (left_knee_score, right_knee_score) if score is not None]
+    knee_score = max(knee_scores) if knee_scores else 0.0
+
+    lean_score = body_lean_score(candidate, settings)
+    width_score = bbox_width_score(candidate.bbox)
+    visibility_score = clamp01(lower_conf / max(settings.confident_conf, settings.observe_conf, 1e-6))
+    return (
+        0.30 * knee_score
+        + 0.20 * lean_score
+        + 0.35 * width_score
+        + 0.20 * visibility_score
+    )
+
+
+def standing_candidate_penalty(
+    candidate: CandidatePose, motion_score: float, settings: ProcessingSettings
+) -> float:
+    lean_score = body_lean_score(candidate, settings)
+    knee_scores = [
+        score
+        for score in (
+            knee_bend_score(candidate, 11, 13, 15, settings),
+            knee_bend_score(candidate, 12, 14, 16, settings),
+        )
+        if score is not None
+    ]
+    knee_score = max(knee_scores) if knee_scores else 0.0
+    width_score = bbox_width_score(candidate.bbox) if candidate.bbox is not None else 0.0
+    if width_score < 0.30 and motion_score < 0.35:
+        return 0.55
+    if width_score < 0.45 and motion_score < 0.22 and lean_score < 0.25:
+        return 0.45
+    if motion_score < 0.18 and lean_score < 0.18 and knee_score < 0.12:
+        return 0.35
+    return 0.0
+
+
+def knee_bend_score(
+    candidate: CandidatePose,
+    hip_idx: int,
+    knee_idx: int,
+    ankle_idx: int,
+    settings: ProcessingSettings,
+) -> float | None:
+    min_score = settings.observe_conf
+    if not keypoint_visible(candidate, hip_idx, min_score):
+        return None
+    if not keypoint_visible(candidate, knee_idx, min_score):
+        return None
+    if not keypoint_visible(candidate, ankle_idx, min_score):
+        return None
+    angle = joint_angle(
+        candidate.keypoints[hip_idx],
+        candidate.keypoints[knee_idx],
+        candidate.keypoints[ankle_idx],
+    )
+    if angle is None:
+        return None
+    return clamp01((175.0 - angle) / 70.0)
+
+
+def body_lean_score(candidate: CandidatePose, settings: ProcessingSettings) -> float:
+    left_shoulder = point_if_visible(candidate, 5, settings.observe_conf)
+    right_shoulder = point_if_visible(candidate, 6, settings.observe_conf)
+    left_hip = point_if_visible(candidate, 11, settings.observe_conf)
+    right_hip = point_if_visible(candidate, 12, settings.observe_conf)
+    if left_shoulder is None or right_shoulder is None or left_hip is None or right_hip is None:
+        return 0.0
+    shoulder_center = (left_shoulder + right_shoulder) / 2.0
+    hip_center = (left_hip + right_hip) / 2.0
+    dx = abs(float(shoulder_center[0] - hip_center[0]))
+    dy = abs(float(shoulder_center[1] - hip_center[1]))
+    return clamp01((dx / max(dy, 1.0)) / 0.55)
+
+
+def bbox_width_score(bbox: tuple[float, float, float, float]) -> float:
+    box_width = max(1.0, bbox[2] - bbox[0])
+    box_height = max(1.0, bbox[3] - bbox[1])
+    return clamp01((box_width / box_height - 0.20) / 0.55)
+
+
+def keypoint_visible(candidate: CandidatePose, idx: int, min_score: float) -> bool:
+    if idx >= len(candidate.scores):
+        return False
+    point = candidate.keypoints[idx]
+    return (
+        float(candidate.scores[idx]) >= min_score
+        and np.isfinite(point[0])
+        and np.isfinite(point[1])
+    )
+
+
+def point_if_visible(
+    candidate: CandidatePose, idx: int, min_score: float
+) -> np.ndarray | None:
+    if not keypoint_visible(candidate, idx, min_score):
+        return None
+    return candidate.keypoints[idx]
+
+
+def joint_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float | None:
+    ab = a - b
+    cb = c - b
+    denom = float(np.linalg.norm(ab) * np.linalg.norm(cb))
+    if denom <= 1e-6:
+        return None
+    cosine = float(np.dot(ab, cb) / denom)
+    return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+
+
+def clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
 def nearest_candidate_to_corridor_centerline(
     candidates: list[CandidatePose],
     region: tuple[float, float, float, float] | None,
     width: int,
     height: int,
+    stats: dict[int, TrackCandidateStats] | None = None,
+    settings: ProcessingSettings | None = None,
 ) -> dict[str, Any]:
     best = nearest_candidate_to_corridor(candidates, region, width, height)
     if best is None or best.bbox is None:
@@ -1565,15 +1789,24 @@ def nearest_candidate_to_corridor_centerline(
             "bbox_height_px": None,
             "bbox_confidence": None,
             "track_id": None,
+            "active_skier_score": None,
         }
 
     centerline_x = corridor_centerline_x(region, width, height)
     cx, _ = bbox_center(best.bbox)
+    active_skier_score = (
+        candidate_active_skier_score(best, stats, settings, width, height)
+        if stats is not None and settings is not None
+        else None
+    )
     return {
         "distance_px": clean_number(abs(cx - centerline_x)),
         "bbox_height_px": clean_number(best.bbox[3] - best.bbox[1]),
         "bbox_confidence": round(float(best.bbox_conf), 5),
         "track_id": best.track_id,
+        "active_skier_score": clean_number(active_skier_score)
+        if active_skier_score is not None
+        else None,
     }
 
 
@@ -1874,6 +2107,7 @@ def frame_record(
     candidate_count: int,
     selection_block_reason: str | None,
     corridor_candidate: dict[str, Any],
+    selected_active_skier_score: float | None,
     width: int,
     height: int,
     raw_keypoints: np.ndarray,
@@ -1899,6 +2133,7 @@ def frame_record(
             candidate_count,
             selection_block_reason,
             corridor_candidate,
+            selected_active_skier_score,
             raw_scores,
             width,
             height,
@@ -1916,6 +2151,7 @@ def detection_diagnostics(
     candidate_count: int,
     selection_block_reason: str | None,
     corridor_candidate: dict[str, Any],
+    selected_active_skier_score: float | None,
     scores: np.ndarray,
     width: int,
     height: int,
@@ -1940,6 +2176,9 @@ def detection_diagnostics(
         "candidate_count": candidate_count,
         "selection_block_reason": selection_block_reason,
         "nearest_corridor_candidate": corridor_candidate,
+        "selected_active_skier_score": clean_number(selected_active_skier_score)
+        if selected_active_skier_score is not None
+        else None,
         "selected_bbox_height_px": clean_number(bbox_height)
         if bbox_height is not None
         else None,
