@@ -5,7 +5,7 @@ import math
 import shutil
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -99,6 +99,7 @@ class ProcessingSettings:
     target_strategy: str = "first"
     target_lock_delay_frames: int = 0
     provisional_target: bool = False
+    early_provisional_target: bool = False
     target_min_frames: int = 5
     target_min_displacement_px: float = 65.0
     target_min_downhill_px: float = 20.0
@@ -795,9 +796,14 @@ def process_video(
                     active_track_id = moving_candidate.track_id
                     selected = moving_candidate
                 elif settings.provisional_target:
-                    selected = choose_moving_candidate(
-                        target_candidates, pending_track_stats, settings, width, height
-                    )
+                    if settings.early_provisional_target:
+                        selected = choose_provisional_moving_candidate(
+                            target_candidates, pending_track_stats, settings, width, height
+                        )
+                    else:
+                        selected = choose_moving_candidate(
+                            target_candidates, pending_track_stats, settings, width, height
+                        )
                     if selected is None:
                         candidates = []
                     else:
@@ -969,7 +975,8 @@ def process_video(
                         locked_gap_frames = 0
                         switch_challenger_id = None
                         switch_challenger_frames = 0
-                    frames_with_pose += 1
+                    if not selected_is_provisional:
+                        frames_with_pose += 1
 
                     if selected_is_provisional:
                         keypoints = raw_keypoints
@@ -1006,11 +1013,11 @@ def process_video(
                         box_height = bbox[3] - bbox[1]
                         if box_height < settings.far_skier_height_ratio * height:
                             warnings.append("far_skier")
-                    if core_conf < settings.min_draw_conf:
+                    if selected_is_provisional:
+                        frame_status = "provisional_target"
+                    elif core_conf < settings.min_draw_conf:
                         frame_status = "low_confidence"
                         low_confidence_frames += 1
-                    elif selected_is_provisional:
-                        frame_status = "provisional_target"
                     else:
                         frame_status = "tracking_ok"
             else:
@@ -1310,6 +1317,28 @@ def choose_moving_candidate(
     )
 
 
+def choose_provisional_moving_candidate(
+    candidates: list[CandidatePose],
+    stats: dict[int, TrackCandidateStats],
+    settings: ProcessingSettings,
+    width: int,
+    height: int,
+) -> CandidatePose | None:
+    relaxed_settings = replace(
+        settings,
+        target_min_track_confidence=0.0,
+        target_min_region_progress=0.0,
+    )
+    moving_candidate = choose_moving_candidate(
+        candidates, stats, relaxed_settings, width, height
+    )
+    if moving_candidate is not None:
+        return moving_candidate
+    return nearest_candidate_to_corridor(
+        candidates, settings.target_region, width, height
+    )
+
+
 def track_passes_moving_gate(
     track_id: int,
     stats: dict[int, TrackCandidateStats],
@@ -1529,19 +1558,34 @@ def nearest_candidate_to_corridor_centerline(
     width: int,
     height: int,
 ) -> dict[str, Any]:
-    if not candidates:
+    best = nearest_candidate_to_corridor(candidates, region, width, height)
+    if best is None or best.bbox is None:
         return {
             "distance_px": None,
             "bbox_height_px": None,
             "bbox_confidence": None,
             "track_id": None,
         }
-    if region is not None:
-        x1, _, x2, _ = region_to_pixels(region, width, height)
-        centerline_x = (x1 + x2) / 2.0
-    else:
-        centerline_x = width / 2.0
 
+    centerline_x = corridor_centerline_x(region, width, height)
+    cx, _ = bbox_center(best.bbox)
+    return {
+        "distance_px": clean_number(abs(cx - centerline_x)),
+        "bbox_height_px": clean_number(best.bbox[3] - best.bbox[1]),
+        "bbox_confidence": round(float(best.bbox_conf), 5),
+        "track_id": best.track_id,
+    }
+
+
+def nearest_candidate_to_corridor(
+    candidates: list[CandidatePose],
+    region: tuple[float, float, float, float] | None,
+    width: int,
+    height: int,
+) -> CandidatePose | None:
+    if not candidates:
+        return None
+    centerline_x = corridor_centerline_x(region, width, height)
     best: CandidatePose | None = None
     best_distance = float("inf")
     for candidate in candidates:
@@ -1552,21 +1596,18 @@ def nearest_candidate_to_corridor_centerline(
         if distance < best_distance:
             best_distance = distance
             best = candidate
+    return best
 
-    if best is None or best.bbox is None:
-        return {
-            "distance_px": None,
-            "bbox_height_px": None,
-            "bbox_confidence": None,
-            "track_id": None,
-        }
 
-    return {
-        "distance_px": clean_number(best_distance),
-        "bbox_height_px": clean_number(best.bbox[3] - best.bbox[1]),
-        "bbox_confidence": round(float(best.bbox_conf), 5),
-        "track_id": best.track_id,
-    }
+def corridor_centerline_x(
+    region: tuple[float, float, float, float] | None,
+    width: int,
+    height: int,
+) -> float:
+    if region is not None:
+        x1, _, x2, _ = region_to_pixels(region, width, height)
+        return (x1 + x2) / 2.0
+    return width / 2.0
 
 
 def region_to_pixels(
@@ -1797,10 +1838,17 @@ def render_overlay(
 
     if settings.draw_box and bbox is not None:
         x1, y1, x2, y2 = [int(round(v)) for v in bbox]
-        box_color = (80, 220, 80) if frame_status == "tracking_ok" else (0, 210, 255)
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), box_color, 2)
+        if frame_status == "provisional_target":
+            box_color = (255, 0, 255)
+            draw_dashed_rectangle(canvas, (x1, y1), (x2, y2), box_color, 3)
+        else:
+            box_color = (80, 220, 80) if frame_status == "tracking_ok" else (0, 210, 255)
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), box_color, 2)
         if settings.draw_labels:
-            label = f"id:{track_id if track_id is not None else '-'} box:{bbox_conf:.2f}"
+            if frame_status == "provisional_target":
+                label = f"provisional/unconfirmed box:{bbox_conf:.2f}"
+            else:
+                label = f"id:{track_id if track_id is not None else '-'} box:{bbox_conf:.2f}"
             cv2.putText(canvas, label, (x1, max(18, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, box_color, 2)
 
     if settings.draw_labels:
@@ -1996,6 +2044,8 @@ def limb_color(
 def status_to_color(status: str) -> tuple[int, int, int]:
     if status == "tracking_ok":
         return (50, 210, 50)
+    if status == "provisional_target":
+        return (255, 0, 255)
     if status == "low_confidence":
         return (0, 210, 255)
     return (50, 80, 240)
@@ -2033,6 +2083,21 @@ def draw_dashed_line(
         e = (int(x1 + direction[0] * end), int(y1 + direction[1] * end))
         cv2.line(image, s, e, color, thickness, cv2.LINE_AA)
         distance += dash + gap
+
+
+def draw_dashed_rectangle(
+    image: np.ndarray,
+    p1: tuple[int, int],
+    p2: tuple[int, int],
+    color: tuple[int, int, int],
+    thickness: int = 2,
+) -> None:
+    x1, y1 = p1
+    x2, y2 = p2
+    draw_dashed_line(image, (x1, y1), (x2, y1), color, thickness)
+    draw_dashed_line(image, (x2, y1), (x2, y2), color, thickness)
+    draw_dashed_line(image, (x2, y2), (x1, y2), color, thickness)
+    draw_dashed_line(image, (x1, y2), (x1, y1), color, thickness)
 
 
 def bbox_area(box: tuple[float, float, float, float] | None) -> float:

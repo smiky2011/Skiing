@@ -27,6 +27,7 @@
       "target_region": [0.28, 0.18, 0.96, 0.72],
       "target_lock_delay_frames": 0,
       "provisional_target": true,
+      "early_provisional_target": true,
       "target_min_displacement_px": 100.0,
       "target_min_downhill_px": 0.0,
       "target_min_downhill_ratio": 0.0,
