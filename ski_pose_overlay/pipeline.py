@@ -53,6 +53,8 @@ COCO_EDGES = [
 ]
 
 CORE_JOINTS = [5, 6, 11, 12, 13, 14, 15, 16]
+PROVISIONAL_SWITCH_MARGIN = 0.35
+PROVISIONAL_MAX_MISSED_FRAMES = 6
 
 MEDIAPIPE_TO_COCO = {
     0: 0,
@@ -733,6 +735,8 @@ def process_video(
     locked_gap_frames = 0
     switch_challenger_id: int | None = None
     switch_challenger_frames = 0
+    provisional_track_id: int | None = None
+    provisional_missed_frames = 0
     tracking_lost_frames = 0
     low_confidence_frames = 0
     frames_with_pose = 0
@@ -801,10 +805,17 @@ def process_video(
                 if moving_candidate is not None:
                     active_track_id = moving_candidate.track_id
                     selected = moving_candidate
+                    provisional_track_id = None
+                    provisional_missed_frames = 0
                 elif settings.provisional_target:
                     if settings.early_provisional_target:
                         selected = choose_active_skier_candidate(
-                            target_candidates, pending_track_stats, settings, width, height
+                            target_candidates,
+                            pending_track_stats,
+                            settings,
+                            width,
+                            height,
+                            preferred_track_id=provisional_track_id,
                         )
                     else:
                         selected = choose_moving_candidate(
@@ -812,8 +823,15 @@ def process_video(
                         )
                     if selected is None:
                         candidates = []
+                        if provisional_track_id is not None:
+                            provisional_missed_frames += 1
+                            if provisional_missed_frames > PROVISIONAL_MAX_MISSED_FRAMES:
+                                provisional_track_id = None
+                                provisional_missed_frames = 0
                     else:
                         selected_is_provisional = True
+                        provisional_track_id = selected.track_id
+                        provisional_missed_frames = 0
                         selected_active_skier_score = candidate_active_skier_score(
                             selected, pending_track_stats, settings, width, height
                         )
@@ -1347,14 +1365,28 @@ def choose_active_skier_candidate(
     settings: ProcessingSettings,
     width: int,
     height: int,
+    preferred_track_id: int | None = None,
+    switch_margin: float = PROVISIONAL_SWITCH_MARGIN,
 ) -> CandidatePose | None:
     best: CandidatePose | None = None
     best_score = -float("inf")
+    preferred: CandidatePose | None = None
+    preferred_score = -float("inf")
     for candidate in candidates:
         score = candidate_active_skier_score(candidate, stats, settings, width, height)
+        if preferred_track_id is not None and candidate.track_id == preferred_track_id:
+            preferred = candidate
+            preferred_score = score
         if score > best_score:
             best = candidate
             best_score = score
+    if (
+        preferred is not None
+        and best is not None
+        and preferred.track_id != best.track_id
+        and preferred_score + switch_margin >= best_score
+    ):
+        return preferred
     return best
 
 
