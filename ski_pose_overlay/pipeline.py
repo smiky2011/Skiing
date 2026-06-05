@@ -1839,8 +1839,8 @@ def render_overlay(
     if settings.draw_box and bbox is not None:
         x1, y1, x2, y2 = [int(round(v)) for v in bbox]
         if frame_status == "provisional_target":
-            box_color = (0, 220, 255)
-            draw_dashed_rectangle(canvas, (x1, y1), (x2, y2), box_color, 2)
+            box_color = (255, 0, 255)
+            draw_dashed_rectangle(canvas, (x1, y1), (x2, y2), box_color, 3)
         else:
             box_color = (80, 220, 80) if frame_status == "tracking_ok" else (0, 210, 255)
             cv2.rectangle(canvas, (x1, y1), (x2, y2), box_color, 2)
@@ -2045,7 +2045,7 @@ def status_to_color(status: str) -> tuple[int, int, int]:
     if status == "tracking_ok":
         return (50, 210, 50)
     if status == "provisional_target":
-        return (0, 220, 255)
+        return (255, 0, 255)
     if status == "low_confidence":
         return (0, 210, 255)
     return (50, 80, 240)
