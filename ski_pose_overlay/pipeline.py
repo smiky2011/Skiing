@@ -772,7 +772,13 @@ def process_video(
             update_track_candidate_stats(
                 pending_track_stats, target_candidates, actual_frame_index
             )
-            candidates = target_candidates if active_track_id is None else sized_candidates
+            candidates = (
+                target_candidates
+                if active_track_id is None
+                else preserve_active_track_candidate(
+                    sized_candidates, raw_candidates, active_track_id
+                )
+            )
             candidate_count = len(candidates)
             corridor_candidate = nearest_candidate_to_corridor_centerline(
                 target_candidates,
@@ -921,7 +927,12 @@ def process_video(
                 ):
                     selected = None
                     warnings.append("roi_recovery_jump_rejected")
-                if bbox is not None and is_too_small_bbox(bbox, settings, height):
+                if (
+                    selected is not None
+                    and should_reject_small_selected_bbox(
+                        selected, active_track_id, settings, height
+                    )
+                ):
                     selected = None
                     warnings.append("skier_too_small_rejected")
                 if (
@@ -1530,6 +1541,34 @@ def reject_too_small_candidates(
         for candidate in candidates
         if candidate.bbox is not None and not is_too_small_bbox(candidate.bbox, settings, height)
     ]
+
+
+def preserve_active_track_candidate(
+    candidates: list[CandidatePose],
+    raw_candidates: list[CandidatePose],
+    active_track_id: int | None,
+) -> list[CandidatePose]:
+    if active_track_id is None or candidates:
+        return candidates
+    active_candidate = find_candidate_by_track_id(raw_candidates, active_track_id)
+    if active_candidate is None or active_candidate.bbox is None:
+        return candidates
+    return [*candidates, active_candidate]
+
+
+def should_reject_small_selected_bbox(
+    selected: CandidatePose,
+    active_track_id: int | None,
+    settings: ProcessingSettings,
+    height: int,
+) -> bool:
+    if selected.bbox is None or not is_too_small_bbox(selected.bbox, settings, height):
+        return False
+    return (
+        active_track_id is None
+        or selected.track_id != active_track_id
+        or selected.source == "roi_recovery"
+    )
 
 
 def deduplicate_candidates(
