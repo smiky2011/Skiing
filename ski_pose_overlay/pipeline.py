@@ -58,6 +58,10 @@ PROVISIONAL_MAX_MISSED_FRAMES = 6
 RACING_POSTURE_PRIOR_WEIGHT = 0.55
 RACING_POSTURE_DISPLACEMENT_WEIGHT = 2.0
 POSTURE_LOCK_CONFIRM_FRAMES = 5
+POSTURE_LOCK_CONTINUITY_CONFIDENCE_RATIO = 0.80
+POSTURE_LOCK_CONTINUITY_SCORE_FLOOR = 2.0
+POSTURE_LOCK_CONTINUITY_HEIGHT_RATIO = 0.60
+POSTURE_LOCK_PROJECTED_SCORE_DECAY = 0.85
 
 MEDIAPIPE_TO_COCO = {
     0: 0,
@@ -1131,6 +1135,9 @@ def process_video(
                             or selected_is_motion_continuity_bridge
                         )
                     ):
+                        # Bridge frames keep last_keypoints anchored to the last real
+                        # detection while prev_gray advances. LK handles short gaps;
+                        # bbox projection catches longer gaps where the seed is stale.
                         propagated = propagate_keypoints(
                             prev_gray,
                             gray,
@@ -1266,6 +1273,9 @@ def process_video(
                         or selected_is_motion_continuity_bridge
                     )
                 ):
+                    # Bridge frames keep last_keypoints anchored to the last real
+                    # detection while prev_gray advances. LK handles short gaps;
+                    # bbox projection catches longer gaps where the seed is stale.
                     propagated = propagate_keypoints(
                         prev_gray,
                         gray,
@@ -1759,11 +1769,13 @@ def is_same_racer_continuity_candidate(
     max_centerline_distance = settings.target_max_centerline_distance_ratio * max(width, 1)
     if centerline_distance > max_centerline_distance:
         return False
-    confidence_floor = settings.target_min_track_confidence * 0.8
+    confidence_floor = (
+        settings.target_min_track_confidence * POSTURE_LOCK_CONTINUITY_CONFIDENCE_RATIO
+    )
     if candidate.bbox_conf < confidence_floor:
         return False
     score = candidate_active_skier_score(candidate, stats, settings, width, height)
-    return score >= 2.0
+    return score >= POSTURE_LOCK_CONTINUITY_SCORE_FLOOR
 
 
 def choose_provisional_moving_candidate(
@@ -2084,7 +2096,9 @@ def is_usable_posture_continuity_box(
     height: int,
 ) -> bool:
     box_height = bbox[3] - bbox[1]
-    minimum_height = max(24.0, settings.too_small_height_ratio * height * 0.60)
+    minimum_height = max(
+        24.0, settings.too_small_height_ratio * height * POSTURE_LOCK_CONTINUITY_HEIGHT_RATIO
+    )
     return box_height >= minimum_height
 
 
@@ -2624,7 +2638,7 @@ def project_keypoints_by_bbox_motion(
         if not (0 <= x < width and 0 <= y < height):
             continue
         out_points[idx] = (x, y)
-        out_scores[idx] = max(0.0, float(score) * 0.85)
+        out_scores[idx] = max(0.0, float(score) * POSTURE_LOCK_PROJECTED_SCORE_DECAY)
         good_count += 1
     if good_count < 3:
         return None
