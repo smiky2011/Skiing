@@ -275,14 +275,30 @@ def write_markdown_summary(summaries: list[dict[str, Any]], path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run ski pose detection eval cases.")
-    parser.add_argument("--cases", default="eval/cases.json", help="Path to cases manifest")
+    parser.add_argument(
+        "--cases",
+        nargs="+",
+        default=["eval/cases.json"],
+        help="Path to cases manifest, or one or more case ids from the default manifest",
+    )
     parser.add_argument("--output-root", default="outputs/eval_baseline", help="Output directory")
     parser.add_argument("--case-id", action="append", help="Run only the given case id; may be repeated")
     parser.add_argument("--full-video", action="store_true", help="Ignore per-case max_frames and process full videos")
     args = parser.parse_args()
 
-    cases = load_cases(Path(args.cases))
-    wanted = set(args.case_id or [])
+    case_args = list(args.cases)
+    manifest_path = Path(case_args[0])
+    if len(case_args) == 1 and manifest_path.exists():
+        cases = load_cases(manifest_path)
+        case_ids = []
+    elif len(case_args) > 1 and manifest_path.exists():
+        cases = load_cases(manifest_path)
+        case_ids = case_args[1:]
+    else:
+        cases = load_cases(Path("eval/cases.json"))
+        case_ids = case_args
+
+    wanted = set([*(args.case_id or []), *case_ids])
     if wanted:
         cases = [case for case in cases if case.get("id") in wanted]
         missing = wanted - {str(case.get("id")) for case in cases}
