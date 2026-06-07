@@ -57,6 +57,7 @@ PROVISIONAL_SWITCH_MARGIN = 0.35
 PROVISIONAL_MAX_MISSED_FRAMES = 6
 RACING_POSTURE_PRIOR_WEIGHT = 0.55
 RACING_POSTURE_DISPLACEMENT_WEIGHT = 2.0
+POSTURE_LOCK_CONFIRM_FRAMES = 5
 
 MEDIAPIPE_TO_COCO = {
     0: 0,
@@ -739,6 +740,10 @@ def process_video(
     switch_challenger_frames = 0
     provisional_track_id: int | None = None
     provisional_missed_frames = 0
+    posture_lock_active = False
+    posture_lock_pending_track_id: int | None = None
+    posture_lock_pending_frames = 0
+    posture_lock_bridge_frames = 0
     tracking_lost_frames = 0
     low_confidence_frames = 0
     frames_with_pose = 0
@@ -794,6 +799,8 @@ def process_video(
             selected_is_provisional = False
             selected_is_reacquired = False
             selected_is_posture_assisted_lock = False
+            selected_is_motion_continuity_bridge = False
+            selected_is_track_continuity_bridge = False
             selected_active_skier_score: float | None = None
             selected_posture_prior_score: float | None = None
             selected_moving_candidate_score: float | None = None
@@ -816,6 +823,10 @@ def process_video(
                 if moving_candidate is not None:
                     active_track_id = moving_candidate.track_id
                     selected = moving_candidate
+                    posture_lock_active = False
+                    posture_lock_pending_track_id = None
+                    posture_lock_pending_frames = 0
+                    posture_lock_bridge_frames = 0
                     provisional_track_id = None
                     provisional_missed_frames = 0
                     selected_active_skier_score = candidate_active_skier_score(
@@ -838,12 +849,22 @@ def process_video(
                             preferred_track_id=provisional_track_id,
                         )
                         if posture_lock_candidate is not None:
-                            active_track_id = posture_lock_candidate.track_id
                             selected = posture_lock_candidate
-                            selected_is_posture_assisted_lock = True
-                            provisional_track_id = None
-                            provisional_missed_frames = 0
+                            if posture_lock_candidate.track_id == posture_lock_pending_track_id:
+                                posture_lock_pending_frames += 1
+                            else:
+                                posture_lock_pending_track_id = posture_lock_candidate.track_id
+                                posture_lock_pending_frames = 1
+                            if posture_lock_pending_frames >= POSTURE_LOCK_CONFIRM_FRAMES:
+                                active_track_id = posture_lock_candidate.track_id
+                                selected_is_posture_assisted_lock = True
+                                posture_lock_active = True
+                                posture_lock_bridge_frames = 0
+                                provisional_track_id = None
+                                provisional_missed_frames = 0
                         else:
+                            posture_lock_pending_track_id = None
+                            posture_lock_pending_frames = 0
                             selected = choose_active_skier_candidate(
                                 target_candidates,
                                 pending_track_stats,
@@ -900,6 +921,10 @@ def process_video(
                         selected, pending_track_stats, settings, width, height
                     )
 
+            predicted_box = predict_bbox(prev_bbox, bbox_velocity, width, height)
+            posture_continuity_box = usable_continuity_box(
+                predicted_box, prev_bbox, settings, height
+            )
             if selected is None:
                 selected = select_candidate(
                     candidates,
@@ -926,10 +951,34 @@ def process_video(
                         width,
                         height,
                     )
+                if selected is None and posture_lock_active:
+                    selected = choose_posture_continuity_candidate(
+                        target_candidates,
+                        pending_track_stats,
+                        settings,
+                        width,
+                        height,
+                        posture_continuity_box,
+                        active_track_id,
+                    )
+                    if selected is not None:
+                        selected = with_track_id(selected, active_track_id)
+                        selected_is_track_continuity_bridge = True
                 selected_is_reacquired = selected is not None
-            predicted_box = predict_bbox(prev_bbox, bbox_velocity, width, height)
+                if selected_is_track_continuity_bridge:
+                    selected_is_reacquired = False
+            selected_is_motion_continuity_bridge = (
+                selected is None
+                and posture_lock_active
+                and posture_continuity_box is not None
+                and posture_lock_bridge_frames
+                < settings.locked_switch_gap_frames + settings.locked_switch_confirm_frames
+                and locked_gap_frames
+                <= settings.locked_switch_gap_frames + settings.locked_switch_confirm_frames
+            )
             if (
                 selected is None
+                and not selected_is_motion_continuity_bridge
                 and settings.roi_recovery
                 and predicted_box is not None
                 and not is_too_small_bbox(predicted_box, settings, height)
@@ -990,6 +1039,45 @@ def process_video(
                     and should_gate_new_track(settings, active_track_id)
                     and selected.track_id is not None
                     and selected.track_id != active_track_id
+                    and posture_lock_active
+                    and moving_candidate_score(
+                        selected, pending_track_stats, settings, width, height
+                    )
+                    is not None
+                ):
+                    active_track_id = selected.track_id
+                    posture_lock_active = False
+                    posture_lock_pending_track_id = None
+                    posture_lock_pending_frames = 0
+                    posture_lock_bridge_frames = 0
+                    switch_challenger_id = None
+                    switch_challenger_frames = 0
+                    locked_gap_frames = 0
+                    selected_is_reacquired = False
+                    warnings.append("posture_lock_normalized")
+                if (
+                    selected is not None
+                    and should_gate_new_track(settings, active_track_id)
+                    and selected.track_id is not None
+                    and selected.track_id != active_track_id
+                    and posture_lock_active
+                    and is_same_racer_continuity_candidate(
+                        selected,
+                        pending_track_stats,
+                        settings,
+                        width,
+                        height,
+                        posture_continuity_box,
+                    )
+                ):
+                    selected = with_track_id(selected, active_track_id)
+                    selected_is_reacquired = False
+                    selected_is_track_continuity_bridge = True
+                if (
+                    selected is not None
+                    and should_gate_new_track(settings, active_track_id)
+                    and selected.track_id is not None
+                    and selected.track_id != active_track_id
                     and not candidate_passes_moving_or_posture_gate(
                         selected, pending_track_stats, settings, width, height
                     )
@@ -1013,6 +1101,16 @@ def process_video(
                     ):
                         selected = None
                         warnings.append("track_switch_deferred")
+                if (
+                    selected is None
+                    and posture_lock_active
+                    and posture_continuity_box is not None
+                    and posture_lock_bridge_frames
+                    < settings.locked_switch_gap_frames + settings.locked_switch_confirm_frames
+                    and locked_gap_frames
+                    <= settings.locked_switch_gap_frames + settings.locked_switch_confirm_frames
+                ):
+                    selected_is_motion_continuity_bridge = True
                 if selected is None:
                     bbox = None
                     bbox_conf = 0.0
@@ -1028,7 +1126,10 @@ def process_video(
                         and last_keypoints is not None
                         and last_scores is not None
                         and last_statuses is not None
-                        and is_usable_motion_box(predicted_box, settings, height)
+                        and (
+                            is_usable_motion_box(predicted_box, settings, height)
+                            or selected_is_motion_continuity_bridge
+                        )
                     ):
                         propagated = propagate_keypoints(
                             prev_gray,
@@ -1038,6 +1139,22 @@ def process_video(
                             last_statuses,
                             settings,
                         )
+                        if (
+                            propagated is None
+                            and selected_is_motion_continuity_bridge
+                            and posture_continuity_box is not None
+                            and prev_bbox is not None
+                        ):
+                            propagated = project_keypoints_by_bbox_motion(
+                                last_keypoints,
+                                last_scores,
+                                last_statuses,
+                                prev_bbox,
+                                posture_continuity_box,
+                                settings,
+                                width,
+                                height,
+                            )
                     if propagated is not None:
                         raw_keypoints, raw_scores = propagated
                         if smoother is not None:
@@ -1053,11 +1170,30 @@ def process_video(
                         if predicted_box is not None:
                             bbox = predicted_box
                             bbox_conf = 0.0
+                        if (
+                            selected_is_motion_continuity_bridge
+                            and posture_continuity_box is not None
+                        ):
+                            bbox = posture_continuity_box
+                            posture_lock_bridge_frames += 1
+                            tracking_lost_frames -= 1
+                            frames_with_pose += 1
+                            frame_status = "tracking_ok"
+                            track_id = active_track_id
+                            candidate_source = "motion_continuity"
+                            warnings = [
+                                warning
+                                for warning in warnings
+                                if warning != "tracking_lost"
+                            ]
+                            warnings.append("posture_lock_continuity")
                     elif smoother is not None:
                         keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
                 else:
                     if selected_is_posture_assisted_lock:
                         warnings.append("posture_prior_lock")
+                    if selected_is_track_continuity_bridge:
+                        warnings.append("track_id_continuity_bridge")
                     track_id = selected.track_id if selected.track_id is not None else active_track_id
                     if not selected_is_provisional:
                         active_track_id = track_id
@@ -1067,6 +1203,7 @@ def process_video(
                         prev_bbox = bbox
                     if not selected_is_provisional:
                         locked_gap_frames = 0
+                        posture_lock_bridge_frames = 0
                         switch_challenger_id = None
                         switch_challenger_frames = 0
                     if not selected_is_provisional:
@@ -1124,7 +1261,10 @@ def process_video(
                     and last_keypoints is not None
                     and last_scores is not None
                     and last_statuses is not None
-                    and is_usable_motion_box(predicted_box, settings, height)
+                    and (
+                        is_usable_motion_box(predicted_box, settings, height)
+                        or selected_is_motion_continuity_bridge
+                    )
                 ):
                     propagated = propagate_keypoints(
                         prev_gray,
@@ -1134,6 +1274,22 @@ def process_video(
                         last_statuses,
                         settings,
                     )
+                    if (
+                        propagated is None
+                        and selected_is_motion_continuity_bridge
+                        and posture_continuity_box is not None
+                        and prev_bbox is not None
+                    ):
+                        propagated = project_keypoints_by_bbox_motion(
+                            last_keypoints,
+                            last_scores,
+                            last_statuses,
+                            prev_bbox,
+                            posture_continuity_box,
+                            settings,
+                            width,
+                            height,
+                        )
                 if propagated is not None:
                     raw_keypoints, raw_scores = propagated
                     if smoother is not None:
@@ -1149,6 +1305,21 @@ def process_video(
                     if predicted_box is not None:
                         bbox = predicted_box
                         bbox_conf = 0.0
+                    if (
+                        selected_is_motion_continuity_bridge
+                        and posture_continuity_box is not None
+                    ):
+                        bbox = posture_continuity_box
+                        posture_lock_bridge_frames += 1
+                        tracking_lost_frames -= 1
+                        frames_with_pose += 1
+                        frame_status = "tracking_ok"
+                        track_id = active_track_id
+                        candidate_source = "motion_continuity"
+                        warnings = [
+                            warning for warning in warnings if warning != "tracking_lost"
+                        ]
+                        warnings.append("posture_lock_continuity")
                 elif smoother is not None:
                     keypoints, scores, statuses = smoother.update(raw_keypoints, raw_scores, timestamp)
 
@@ -1177,7 +1348,7 @@ def process_video(
             )
             writer.write(overlay)
             prev_gray = gray
-            if not selected_is_provisional:
+            if not selected_is_provisional and not selected_is_motion_continuity_bridge:
                 last_keypoints = keypoints.copy()
                 last_scores = scores.copy()
                 last_statuses = list(statuses)
@@ -1539,6 +1710,62 @@ def posture_prior_lock_score(
     return candidate_active_skier_score(candidate, stats, settings, width, height)
 
 
+def choose_posture_continuity_candidate(
+    candidates: list[CandidatePose],
+    stats: dict[int, TrackCandidateStats],
+    settings: ProcessingSettings,
+    width: int,
+    height: int,
+    predicted_box: tuple[float, float, float, float] | None,
+    active_track_id: int | None,
+) -> CandidatePose | None:
+    best: CandidatePose | None = None
+    best_score = -float("inf")
+    for candidate in candidates:
+        if candidate.track_id == active_track_id:
+            continue
+        if not is_same_racer_continuity_candidate(
+            candidate, stats, settings, width, height, predicted_box
+        ):
+            continue
+        score = candidate_active_skier_score(candidate, stats, settings, width, height)
+        if score > best_score:
+            best = candidate
+            best_score = score
+    return best
+
+
+def is_same_racer_continuity_candidate(
+    candidate: CandidatePose,
+    stats: dict[int, TrackCandidateStats],
+    settings: ProcessingSettings,
+    width: int,
+    height: int,
+    predicted_box: tuple[float, float, float, float] | None,
+) -> bool:
+    if candidate.bbox is None or predicted_box is None:
+        return False
+    if is_too_small_bbox(candidate.bbox, settings, height):
+        return False
+    if bbox_center_distance(predicted_box, candidate.bbox) > locked_motion_jump_limit(
+        predicted_box,
+        settings.locked_max_jump_px,
+        settings.locked_max_jump_height_ratio,
+    ):
+        return False
+    centerline_distance = candidate_centerline_distance(
+        candidate, settings.target_region, width, height
+    )
+    max_centerline_distance = settings.target_max_centerline_distance_ratio * max(width, 1)
+    if centerline_distance > max_centerline_distance:
+        return False
+    confidence_floor = settings.target_min_track_confidence * 0.8
+    if candidate.bbox_conf < confidence_floor:
+        return False
+    score = candidate_active_skier_score(candidate, stats, settings, width, height)
+    return score >= 2.0
+
+
 def choose_provisional_moving_candidate(
     candidates: list[CandidatePose],
     stats: dict[int, TrackCandidateStats],
@@ -1813,6 +2040,17 @@ def merge_duplicate_candidate(
     )
 
 
+def with_track_id(candidate: CandidatePose, track_id: int | None) -> CandidatePose:
+    return CandidatePose(
+        bbox=candidate.bbox,
+        bbox_conf=candidate.bbox_conf,
+        track_id=track_id,
+        keypoints=candidate.keypoints,
+        scores=candidate.scores,
+        source=candidate.source,
+    )
+
+
 def candidate_quality_score(candidate: CandidatePose) -> float:
     return float(candidate.bbox_conf) + 0.35 * mean_confidence(candidate.scores, CORE_JOINTS)
 
@@ -1821,6 +2059,33 @@ def is_too_small_bbox(
     bbox: tuple[float, float, float, float], settings: ProcessingSettings, height: int
 ) -> bool:
     return bbox[3] - bbox[1] < max(24.0, settings.too_small_height_ratio * height)
+
+
+def usable_continuity_box(
+    predicted_box: tuple[float, float, float, float] | None,
+    fallback_box: tuple[float, float, float, float] | None,
+    settings: ProcessingSettings,
+    height: int,
+) -> tuple[float, float, float, float] | None:
+    if predicted_box is not None and is_usable_posture_continuity_box(
+        predicted_box, settings, height
+    ):
+        return predicted_box
+    if fallback_box is not None and is_usable_posture_continuity_box(
+        fallback_box, settings, height
+    ):
+        return fallback_box
+    return None
+
+
+def is_usable_posture_continuity_box(
+    bbox: tuple[float, float, float, float],
+    settings: ProcessingSettings,
+    height: int,
+) -> bool:
+    box_height = bbox[3] - bbox[1]
+    minimum_height = max(24.0, settings.too_small_height_ratio * height * 0.60)
+    return box_height >= minimum_height
 
 
 def is_usable_motion_box(
@@ -2326,6 +2591,44 @@ def clip_bbox(
         min(max(0.0, x2), float(width - 1)),
         min(max(0.0, y2), float(height - 1)),
     )
+
+
+def project_keypoints_by_bbox_motion(
+    last_keypoints: np.ndarray,
+    last_scores: np.ndarray,
+    last_statuses: list[str],
+    prev_bbox: tuple[float, float, float, float],
+    predicted_box: tuple[float, float, float, float],
+    settings: ProcessingSettings,
+    width: int,
+    height: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    prev_center = bbox_center(prev_bbox)
+    predicted_center = bbox_center(predicted_box)
+    dx = float(predicted_center[0] - prev_center[0])
+    dy = float(predicted_center[1] - prev_center[1])
+    out_points = np.full((len(COCO_KEYPOINTS), 2), np.nan, dtype=np.float32)
+    out_scores = np.zeros(len(COCO_KEYPOINTS), dtype=np.float32)
+    good_count = 0
+    for idx, (point, score, status) in enumerate(
+        zip(last_keypoints, last_scores, last_statuses, strict=True)
+    ):
+        if status not in {"observed", "inferred"}:
+            continue
+        if float(score) < settings.observe_conf:
+            continue
+        if not (np.isfinite(point[0]) and np.isfinite(point[1])):
+            continue
+        x = float(point[0] + dx)
+        y = float(point[1] + dy)
+        if not (0 <= x < width and 0 <= y < height):
+            continue
+        out_points[idx] = (x, y)
+        out_scores[idx] = max(0.0, float(score) * 0.85)
+        good_count += 1
+    if good_count < 3:
+        return None
+    return out_points, out_scores
 
 
 def propagate_keypoints(
