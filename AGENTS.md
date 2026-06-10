@@ -81,6 +81,8 @@ When possible, generate eval outputs directly into the PR-specific Drive folder.
 
 ## Agent Workflow Notes
 
+Default role split for this project: Claude is expected to make fixes, code changes, and implementation attempts. Codex should act primarily as an independent reviewer unless the user explicitly asks Codex to implement changes. In review mode, evaluate Claude's changes as proposals, prioritize detection/tracking behavior, review-video quality, metrics, regressions, and code risk, and recommend precise follow-up comments or actions rather than editing code.
+
 Before starting a new improvement, check GitHub PR comments from the previous merged PR. Convert the user feedback into the next focused branch. Current known feedback after PR #1: early far-away skier detection is missing in the first seconds of `1592`, `1571`, and `qiaobo_day2`; `qiaobo_day1` still alternates target around 8-12s and switches to the wrong skier after 13s.
 
 ## Security & Configuration Tips
