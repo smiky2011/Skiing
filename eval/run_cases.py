@@ -30,6 +30,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         "recall_crop_upscale": 2.0,
         "recall_crop_imgsz": 1920,
         "recall_crop_conf": None,
+        "track_crop_inference": False,
+        "track_crop_margin": 0.75,
+        "track_crop_upscale": 2.0,
+        "track_crop_imgsz": 1280,
+        "track_crop_conf": None,
         "target_strategy": "first",
         "target_lock_delay_frames": 0,
         "provisional_target": False,
@@ -58,6 +63,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         "recall_crop_upscale": 2.0,
         "recall_crop_imgsz": 1920,
         "recall_crop_conf": None,
+        "track_crop_inference": False,
+        "track_crop_margin": 0.75,
+        "track_crop_upscale": 2.0,
+        "track_crop_imgsz": 1280,
+        "track_crop_conf": None,
         "target_strategy": "moving",
         "target_lock_delay_frames": 0,
         "provisional_target": False,
@@ -86,6 +96,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         "recall_crop_upscale": 2.0,
         "recall_crop_imgsz": 1920,
         "recall_crop_conf": None,
+        "track_crop_inference": False,
+        "track_crop_margin": 0.75,
+        "track_crop_upscale": 2.0,
+        "track_crop_imgsz": 1280,
+        "track_crop_conf": None,
         "target_strategy": "first",
         "target_lock_delay_frames": 0,
         "provisional_target": False,
@@ -189,6 +204,17 @@ def settings_for_case(case: dict[str, Any], full_video: bool = False) -> Process
             if case.get("recall_crop_conf") is not None
             else preset["recall_crop_conf"]
         ),
+        track_crop_inference=bool(
+            case.get("track_crop_inference", preset["track_crop_inference"])
+        ),
+        track_crop_margin=float(case.get("track_crop_margin", preset["track_crop_margin"])),
+        track_crop_upscale=float(case.get("track_crop_upscale", preset["track_crop_upscale"])),
+        track_crop_imgsz=int(case.get("track_crop_imgsz", preset["track_crop_imgsz"])),
+        track_crop_conf=(
+            float(case["track_crop_conf"])
+            if case.get("track_crop_conf") is not None
+            else preset["track_crop_conf"]
+        ),
     )
 
 
@@ -284,6 +310,11 @@ def main() -> None:
     parser.add_argument("--output-root", default="outputs/eval_baseline", help="Output directory")
     parser.add_argument("--case-id", action="append", help="Run only the given case id; may be repeated")
     parser.add_argument("--full-video", action="store_true", help="Ignore per-case max_frames and process full videos")
+    parser.add_argument(
+        "--track-crop",
+        action="store_true",
+        help="Force-enable tracked-crop inference on every case (A/B against the same command without this flag)",
+    )
     args = parser.parse_args()
 
     case_args = list(args.cases)
@@ -304,6 +335,9 @@ def main() -> None:
         missing = wanted - {str(case.get("id")) for case in cases}
         if missing:
             raise ValueError(f"Unknown case id(s): {', '.join(sorted(missing))}")
+
+    if args.track_crop:
+        cases = [{**case, "track_crop_inference": True} for case in cases]
 
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)

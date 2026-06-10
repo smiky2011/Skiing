@@ -62,6 +62,7 @@ POSTURE_LOCK_CONTINUITY_CONFIDENCE_RATIO = 0.80
 POSTURE_LOCK_CONTINUITY_SCORE_FLOOR = 2.0
 POSTURE_LOCK_CONTINUITY_HEIGHT_RATIO = 0.60
 POSTURE_LOCK_PROJECTED_SCORE_DECAY = 0.85
+TRACK_CROP_ANCHOR_MAX_HEIGHT_RATIO = 1.5
 
 MEDIAPIPE_TO_COCO = {
     0: 0,
@@ -130,6 +131,11 @@ class ProcessingSettings:
     recall_crop_imgsz: int = 1920
     recall_crop_conf: float | None = None
     recall_crop_track_distance_px: float = 140.0
+    track_crop_inference: bool = False
+    track_crop_margin: float = 0.75
+    track_crop_upscale: float = 2.0
+    track_crop_imgsz: int = 1280
+    track_crop_conf: float | None = None
     locked_max_jump_px: float = 240.0
     locked_max_jump_height_ratio: float = 0.90
     locked_switch_gap_frames: int = 8
@@ -314,11 +320,16 @@ class YoloPoseBackend:
         self.model = YOLO(settings.model)
         self.predict_model = (
             YOLO(settings.model)
-            if settings.refine_pose or settings.recall_region_crop
+            if settings.refine_pose
+            or settings.recall_region_crop
+            or settings.track_crop_inference
             else None
         )
         self.refine_model = self.predict_model if settings.refine_pose else None
         self.crop_model = self.predict_model if settings.recall_region_crop else None
+        self.track_crop_model = (
+            self.predict_model if settings.track_crop_inference else None
+        )
         self.frame_seq = 0
         self.next_crop_track_id = -1
         self.crop_tracks: dict[int, tuple[tuple[float, float], int]] = {}
@@ -483,6 +494,127 @@ class YoloPoseBackend:
             self.next_crop_track_id -= 1
         self.crop_tracks[best_id] = (center, self.frame_seq)
         return best_id
+
+    def infer_track_crop(
+        self,
+        frame: np.ndarray,
+        anchor_box: tuple[float, float, float, float],
+        anchor_track_id: int | None,
+    ) -> list[CandidatePose]:
+        if self.track_crop_model is None:
+            return []
+
+        height, width = frame.shape[:2]
+        crop, offset = crop_around_box(frame, anchor_box, self.settings.track_crop_margin)
+        if crop is None or crop.size == 0:
+            return []
+
+        # Upsample only up to the inference size: pixels beyond track_crop_imgsz
+        # would be thrown away by the letterbox resize anyway.
+        side = max(crop.shape[0], crop.shape[1], 1)
+        scale = max(
+            1.0,
+            min(
+                float(self.settings.track_crop_upscale),
+                float(self.settings.track_crop_imgsz) / float(side),
+            ),
+        )
+        infer_image = (
+            cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            if scale > 1.0
+            else crop
+        )
+        kwargs: dict[str, Any] = {
+            "conf": (
+                self.settings.track_crop_conf
+                if self.settings.track_crop_conf is not None
+                else max(0.01, min(self.settings.conf, 0.10))
+            ),
+            "imgsz": self.settings.track_crop_imgsz,
+            "verbose": False,
+        }
+        if self.settings.device:
+            kwargs["device"] = self.settings.device
+
+        results = self.track_crop_model.predict(infer_image, **kwargs)
+        if not results:
+            return []
+
+        result = results[0]
+        boxes = result.boxes
+        keypoints = result.keypoints
+        if boxes is None or keypoints is None or len(boxes) == 0:
+            return []
+
+        ox, oy = offset
+        xyxy = boxes.xyxy.detach().cpu().numpy()
+        confs = boxes.conf.detach().cpu().numpy() if boxes.conf is not None else np.ones(len(xyxy))
+        kpt_data = keypoints.data.detach().cpu().numpy()
+
+        detections: list[
+            tuple[tuple[float, float, float, float], float, np.ndarray, np.ndarray]
+        ] = []
+        for idx, box in enumerate(xyxy):
+            mapped_box = box.astype(np.float32) / scale
+            mapped_box[[0, 2]] += ox
+            mapped_box[[1, 3]] += oy
+
+            data = kpt_data[idx]
+            points = data[:, :2].astype(np.float32) / scale
+            points[:, 0] += ox
+            points[:, 1] += oy
+            scores = (
+                data[:, 2].astype(np.float32)
+                if data.shape[1] >= 3
+                else np.ones(len(COCO_KEYPOINTS), dtype=np.float32)
+            )
+            bbox = tuple(
+                float(v) for v in clip_bbox(tuple(float(v) for v in mapped_box), width, height)
+            )
+            detections.append((bbox, float(confs[idx]), points, scores))
+
+        # The detection nearest the anchor inherits the active track id, but only
+        # within the same jump limit the locked-motion gate already trusts AND at
+        # a consistent scale: a person much taller than the predicted box is a
+        # bystander near the racer, not the racer. All other crop detections stay
+        # id-less — assigning them ids would pollute the shared crop-track
+        # registry the region-crop recall path depends on.
+        anchor_index: int | None = None
+        if anchor_track_id is not None:
+            jump_limit = locked_motion_jump_limit(
+                anchor_box,
+                self.settings.locked_max_jump_px,
+                self.settings.locked_max_jump_height_ratio,
+            )
+            anchor_height = max(1.0, anchor_box[3] - anchor_box[1])
+            best_distance = float("inf")
+            for idx, (bbox, _, _, _) in enumerate(detections):
+                height_ratio = max(1.0, bbox[3] - bbox[1]) / anchor_height
+                if (
+                    height_ratio > TRACK_CROP_ANCHOR_MAX_HEIGHT_RATIO
+                    or height_ratio < 1.0 / TRACK_CROP_ANCHOR_MAX_HEIGHT_RATIO
+                ):
+                    continue
+                distance = bbox_center_distance(anchor_box, bbox)
+                if distance < best_distance:
+                    best_distance = distance
+                    anchor_index = idx
+            if anchor_index is not None and best_distance > jump_limit:
+                anchor_index = None
+
+        candidates: list[CandidatePose] = []
+        for idx, (bbox, conf, points, scores) in enumerate(detections):
+            candidates.append(
+                CandidatePose(
+                    bbox=bbox,
+                    bbox_conf=conf,
+                    track_id=anchor_track_id if idx == anchor_index else None,
+                    keypoints=points,
+                    scores=scores,
+                    source="track_crop",
+                )
+            )
+        return candidates
 
     def refine(self, frame: np.ndarray, candidate: CandidatePose) -> CandidatePose:
         if self.refine_model is None or candidate.bbox is None:
@@ -748,6 +880,7 @@ def process_video(
     posture_lock_pending_track_id: int | None = None
     posture_lock_pending_frames = 0
     posture_lock_bridge_frames = 0
+    track_crop_inherit_streak = 0
     tracking_lost_frames = 0
     low_confidence_frames = 0
     frames_with_pose = 0
@@ -774,7 +907,68 @@ def process_video(
             actual_frame_index = settings.start_frame + frame_index
             timestamp = actual_frame_index / fps if fps else 0.0
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            raw_candidates = deduplicate_candidates(backend.infer(frame), active_track_id)
+            predicted_box = predict_bbox(prev_bbox, bbox_velocity, width, height)
+            inferred_candidates = backend.infer(frame)
+            track_crop_inherited = False
+            if (
+                settings.track_crop_inference
+                and active_track_id is not None
+                and predicted_box is not None
+                and hasattr(backend, "infer_track_crop")
+            ):
+                # SkiTraVis-style search region: while locked, also detect on an
+                # upsampled crop around the predicted box so a far/dim racer the
+                # full-frame pass misses can still be found. The crop candidate
+                # only inherits the active id when the full-frame pass did not
+                # already report it; otherwise dedup merges the overlapping pair.
+                # Inheritance is a re-lock, so the racer discriminator gates it
+                # (same-racer continuity) and it may not carry the lock longer
+                # than the pipeline's own switch-decision window — past that the
+                # normal relock gates decide.
+                anchor_track_id = (
+                    active_track_id
+                    if find_candidate_by_track_id(inferred_candidates, active_track_id)
+                    is None
+                    else None
+                )
+                if (
+                    anchor_track_id is not None
+                    and track_crop_inherit_streak
+                    >= settings.locked_switch_gap_frames
+                    + settings.locked_switch_confirm_frames
+                ):
+                    anchor_track_id = None
+                track_crop_candidates = backend.infer_track_crop(
+                    frame, predicted_box, anchor_track_id
+                )
+                if anchor_track_id is not None:
+                    anchored_index = next(
+                        (
+                            idx
+                            for idx, candidate in enumerate(track_crop_candidates)
+                            if candidate.track_id == anchor_track_id
+                        ),
+                        None,
+                    )
+                    if anchored_index is not None:
+                        anchored = track_crop_candidates[anchored_index]
+                        if is_same_racer_continuity_candidate(
+                            anchored,
+                            pending_track_stats,
+                            settings,
+                            width,
+                            height,
+                            predicted_box,
+                        ):
+                            track_crop_inherited = True
+                        else:
+                            track_crop_candidates[anchored_index] = with_track_id(
+                                anchored, None
+                            )
+                inferred_candidates.extend(track_crop_candidates)
+            if track_crop_inherited:
+                track_crop_inherit_streak += 1
+            raw_candidates = deduplicate_candidates(inferred_candidates, active_track_id)
             raw_candidate_count = len(raw_candidates)
             sized_candidates = reject_too_small_candidates(raw_candidates, settings, height)
             target_candidates = filter_candidates_by_region(
@@ -787,7 +981,13 @@ def process_video(
                 target_candidates
                 if active_track_id is None
                 else preserve_active_track_candidate(
-                    sized_candidates, raw_candidates, active_track_id
+                    sized_candidates,
+                    raw_candidates,
+                    active_track_id,
+                    # With tracked-crop inference the locked racer may legitimately
+                    # be below the size floor; keep it selectable instead of only
+                    # rescuing it when every other candidate is gone.
+                    always=settings.track_crop_inference,
                 )
             )
             candidate_count = len(candidates)
@@ -925,7 +1125,6 @@ def process_video(
                         selected, pending_track_stats, settings, width, height
                     )
 
-            predicted_box = predict_bbox(prev_bbox, bbox_velocity, width, height)
             posture_continuity_box = usable_continuity_box(
                 predicted_box, prev_bbox, settings, height
             )
@@ -1005,7 +1204,9 @@ def process_video(
             if selected is not None:
                 if selected.source == "roi_recovery":
                     warnings.append("roi_recovery")
-                elif hasattr(backend, "refine"):
+                elif selected.source != "track_crop" and hasattr(backend, "refine"):
+                    # track_crop candidates already come from an upsampled crop;
+                    # re-refining would just repeat the same inference.
                     selected = backend.refine(frame, selected)
                 candidate_source = selected.source
                 raw_keypoints = selected.keypoints
@@ -1342,6 +1543,14 @@ def process_video(
                 if not switch_challenger_seen:
                     switch_challenger_id = None
                     switch_challenger_frames = 0
+            if (
+                frame_status in {"tracking_ok", "low_confidence"}
+                and candidate_source
+                not in {"track_crop", "motion_inference", "motion_continuity", "none"}
+            ):
+                # The lock survived on a real full-frame detection; the crop
+                # bridge budget starts over.
+                track_crop_inherit_streak = 0
 
             overlay = render_overlay(
                 frame,
@@ -1981,8 +2190,13 @@ def preserve_active_track_candidate(
     candidates: list[CandidatePose],
     raw_candidates: list[CandidatePose],
     active_track_id: int | None,
+    always: bool = False,
 ) -> list[CandidatePose]:
-    if active_track_id is None or candidates:
+    if active_track_id is None:
+        return candidates
+    if candidates and not always:
+        return candidates
+    if find_candidate_by_track_id(candidates, active_track_id) is not None:
         return candidates
     active_candidate = find_candidate_by_track_id(raw_candidates, active_track_id)
     if active_candidate is None or active_candidate.bbox is None:
@@ -2872,11 +3086,14 @@ def detection_diagnostics(
 
 def summarize_frame_diagnostics(frames: list[dict[str, Any]]) -> dict[str, Any]:
     failure_counts: dict[str, int] = {}
+    selected_source_counts: dict[str, int] = {}
     raw_candidate_total = 0
     candidate_total = 0
     bbox_heights = []
     corridor_distances = []
     for frame in frames:
+        source = str(frame.get("candidate_source") or "none")
+        selected_source_counts[source] = selected_source_counts.get(source, 0) + 1
         diagnostics = frame.get("diagnostics", {})
         raw_candidate_total += int(diagnostics.get("raw_candidate_count") or 0)
         candidate_total += int(diagnostics.get("candidate_count") or 0)
@@ -2894,6 +3111,7 @@ def summarize_frame_diagnostics(frames: list[dict[str, Any]]) -> dict[str, Any]:
     frame_count = len(frames)
     return {
         "failure_counts": failure_counts,
+        "selected_source_counts": selected_source_counts,
         "avg_raw_candidates_per_frame": round(raw_candidate_total / frame_count, 4)
         if frame_count
         else 0.0,
