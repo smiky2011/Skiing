@@ -81,6 +81,14 @@ When possible, generate eval outputs directly into the PR-specific Drive folder.
 
 ## Agent Workflow Notes
 
+Use the Claude project memory folder as the continuity source for this project when the user asks about prior decisions, benchmark direction, PR history, training results, or cross-agent workflow:
+
+```text
+/Users/quan/.claude/projects/-Users-quan-Documents-ski-project-codex-/memory/
+```
+
+Read `MEMORY.md` first, then any referenced memory files relevant to the question. If the user explicitly asks to update shared project memory, edit the appropriate file in that folder so Claude and Codex stay aligned.
+
 Before starting a new improvement, check GitHub PR comments from the previous merged PR. Convert the user feedback into the next focused branch. Current known feedback after PR #1: early far-away skier detection is missing in the first seconds of `1592`, `1571`, and `qiaobo_day2`; `qiaobo_day1` still alternates target around 8-12s and switches to the wrong skier after 13s.
 
 ## Security & Configuration Tips
