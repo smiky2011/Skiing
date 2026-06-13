@@ -5,7 +5,7 @@ import math
 import shutil
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -136,6 +136,13 @@ class ProcessingSettings:
     locked_switch_confirm_frames: int = 3
     roi_recovery_max_jump_px: float = 180.0
     roi_recovery_max_jump_height_ratio: float = 0.90
+    # External single-object tracker prior (SkiTraVis Stage A / STARK). Path to a
+    # per-frame box JSON {frame_index: [x1,y1,x2,y2]} in the source video's pixel
+    # space. When set, each frame the box is realized as a pose-in-box candidate
+    # (source="tracker_prior") and offered to the existing racer discriminator,
+    # which still owns identity. Off (None) by default; no effect when unset.
+    tracker_prior_path: str | None = None
+    tracker_prior_min_iou: float = 0.20
 
 
 @dataclass
@@ -698,6 +705,24 @@ class MediaPipePoseBackend:
         self.pose.close()
 
 
+def load_tracker_prior(path: str | Path) -> dict[int, tuple[float, float, float, float]]:
+    """Load a per-frame tracker box prior produced by the SkiTraVis Stage-A export.
+
+    Accepts {"boxes": {frame_index: [x1,y1,x2,y2]}} or a bare
+    {frame_index: [x1,y1,x2,y2]} mapping (keys may be strings). Boxes must be in
+    the source video's pixel space and absolute frame indices.
+    """
+    with Path(path).expanduser().open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+    boxes = payload.get("boxes", payload) if isinstance(payload, dict) else {}
+    out: dict[int, tuple[float, float, float, float]] = {}
+    for key, value in boxes.items():
+        if value is None or len(value) < 4:
+            continue
+        out[int(key)] = (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
+    return out
+
+
 def process_video(
     video_path: str | Path,
     output_dir: str | Path = "outputs",
@@ -726,6 +751,11 @@ def process_video(
     backend = build_backend(settings)
     backend_name = backend.name
     smoother = PoseSmoother(settings, fps) if settings.smooth else None
+    tracker_prior_boxes = (
+        load_tracker_prior(settings.tracker_prior_path)
+        if settings.tracker_prior_path
+        else None
+    )
 
     output_video = output_dir / f"{video_path.stem}_skeleton_overlay.mp4"
     writer = make_writer(output_video, fps, width, height)
@@ -799,6 +829,30 @@ def process_video(
                 pending_track_stats,
                 settings,
             )
+            # SkiTraVis Stage-A (STARK) tracker prior: when the external tracker
+            # held a box this frame that the full-frame detector did NOT already
+            # cover, realize it as a pose-in-box candidate and offer it to the
+            # normal selection. STARK supplies the frame-to-frame hold/recall; the
+            # racer discriminator below still decides whether to take/keep it.
+            if (
+                tracker_prior_boxes is not None
+                and hasattr(backend, "recover_from_roi")
+            ):
+                prior_box = tracker_prior_boxes.get(actual_frame_index)
+                if prior_box is not None and not is_too_small_bbox(prior_box, settings, height):
+                    already_covered = any(
+                        c.bbox is not None and bbox_iou(prior_box, c.bbox) >= settings.tracker_prior_min_iou
+                        for c in sized_candidates
+                    )
+                    if not already_covered:
+                        prior_candidate = backend.recover_from_roi(
+                            frame, prior_box, active_track_id
+                        )
+                        if prior_candidate is not None:
+                            prior_candidate = replace(prior_candidate, source="tracker_prior")
+                            target_candidates = [prior_candidate, *target_candidates]
+                            candidates = [prior_candidate, *candidates]
+                            candidate_count = len(candidates)
             selected: CandidatePose | None = None
             selected_is_provisional = False
             selected_is_reacquired = False
