@@ -84,6 +84,7 @@ def centerline(gates):
         return c if deg == 2 else np.array([0.0, c[0], c[1]])   # pad linear -> [c2,c1,c0]
 
     c = _fit(ys, xs)
+    inl = np.ones(len(ys), bool)
     # one robust pass: drop outlier gates (a stray off-line gate tilts the spine)
     if len(ys) >= 4:
         resid = np.abs(xs - np.polyval(c, ys))
@@ -91,7 +92,10 @@ def centerline(gates):
         inl = resid <= 2.5 * mad
         if 2 <= inl.sum() < len(ys):
             c = _fit(ys[inl], xs[inl])
-    return {"coeffs": c.tolist(), "y0": float(ys[0]), "y1": float(ys[-1])}
+    rms = float(np.sqrt(np.mean((xs[inl] - np.polyval(c, ys[inl])) ** 2))) if inl.sum() else 0.0
+    return {"coeffs": c.tolist(), "y0": float(ys[0]), "y1": float(ys[-1]),
+            # reliability fields (Codex): support, vertical extent, fit tightness
+            "n_gates": int(inl.sum()), "y_span": float(ys[-1] - ys[0]), "residual_px": round(rms, 1)}
 
 
 def x_at_y(cl, y):
@@ -108,7 +112,10 @@ def ema(prev, cur, a):
     pc, cc = np.array(prev["coeffs"]), np.array(cur["coeffs"])
     return {"coeffs": (a * cc + (1 - a) * pc).tolist(),
             "y0": a * cur["y0"] + (1 - a) * prev["y0"],
-            "y1": a * cur["y1"] + (1 - a) * prev["y1"]}
+            "y1": a * cur["y1"] + (1 - a) * prev["y1"],
+            # reliability reflects the CURRENT frame's detections
+            "n_gates": cur.get("n_gates", 0), "y_span": cur.get("y_span", 0.0),
+            "residual_px": cur.get("residual_px", 0.0)}
 
 
 def draw(frame, gates, cl, band_px):
