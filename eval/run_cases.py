@@ -119,7 +119,7 @@ def settings_for_case(case: dict[str, Any], full_video: bool = False) -> Process
 
     return ProcessingSettings(
         backend=str(case.get("backend", "auto")),
-        model=str(case.get("model", "yolo11n-pose.pt")),
+        model=str(case.get("model", "ski_pose_v1.pt")),
         tracker=str(case.get("tracker", "bytetrack.yaml")),
         imgsz=int(case.get("imgsz", preset["imgsz"])),
         conf=float(case.get("conf", preset["conf"])),
