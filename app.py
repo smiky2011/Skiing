@@ -66,7 +66,7 @@ with left:
         },
     }[preset]
     backend = st.selectbox("Backend", ["auto", "yolo", "mediapipe (experimental)"], index=0)
-    model = st.text_input("YOLO model", value="yolo11n-pose.pt")
+    model = st.text_input("YOLO model", value=ProcessingSettings().model)
     tracker = st.selectbox("Tracker", ["bytetrack.yaml", "botsort.yaml"], index=0)
     imgsz = st.select_slider(
         "YOLO image size",

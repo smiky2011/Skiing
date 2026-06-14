@@ -47,7 +47,11 @@ def main() -> None:
         help="Convenience defaults for difficult footage",
     )
     parser.add_argument("--backend", default="auto", choices=["auto", "yolo", "mediapipe"])
-    parser.add_argument("--model", default="yolo11n-pose.pt", help="YOLO pose weights path/name")
+    parser.add_argument(
+        "--model",
+        default=ProcessingSettings().model,
+        help="YOLO pose weights path/name (defaults to the pipeline's fine-tuned ski-base v1)",
+    )
     parser.add_argument("--tracker", default="bytetrack.yaml", help="Ultralytics tracker YAML")
     parser.add_argument("--imgsz", type=int, default=None, help="YOLO inference image size")
     parser.add_argument("--conf", type=float, default=None, help="Model confidence threshold")

@@ -91,7 +91,7 @@ The overlay intentionally hides weak limbs instead of drawing fake confident ske
 ## Practical Notes
 
 - Video IO uses OpenCV `VideoCapture`/`VideoWriter`, so `ffmpeg` is not required.
-- The default model is `yolo11n-pose.pt` (Ultralytics fetches the weights automatically on first run if they are not already present). `yolo11s-pose.pt` is also supported for comparison.
+- The default model is `ski_pose_v1.pt` — our Ski-2DPose fine-tuned `yolo11s-pose` ("ski-base v1"), kept as a local runtime asset at the repo root (it is not auto-downloaded). Pass `--model yolo11n-pose.pt` (CLI) or change the model field (app) to fall back to the stock detector, which Ultralytics fetches automatically; `yolo11s-pose.pt` is also supported for comparison.
 - Far-skier mode raises YOLO input size, lowers confidence, and enables a second pose pass on the selected skier crop. It improves recall but can pick the wrong person unless you provide a target hint.
 - Gate occlusion cannot be fully solved by a 2D model alone. The current tool now tries a predicted crop around the skier when full-frame detection fails, then carries short missing-joint gaps with optical flow as `inferred`, and hides them if the occlusion lasts too long.
 - The keypoint JSON records `candidate_source`: `detector`, `crop_refine`, `roi_recovery`, `motion_inference`, or `none`.

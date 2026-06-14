@@ -87,7 +87,11 @@ MEDIAPIPE_TO_COCO = {
 @dataclass
 class ProcessingSettings:
     backend: str = "auto"
-    model: str = "yolo11n-pose.pt"
+    # Default detector: our Ski-2DPose fine-tuned YOLO11s-pose ("ski-base v1").
+    # Local runtime asset at repo root (gitignored like all *.pt); copied from
+    # runs/pose/training/runs/ski2dpose_s_ft1/weights/best.pt. Override `model`
+    # with "yolo11n-pose.pt" to fall back to the stock detector.
+    model: str = "ski_pose_v1.pt"
     tracker: str = "bytetrack.yaml"
     imgsz: int = 1280
     conf: float = 0.25

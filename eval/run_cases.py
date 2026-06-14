@@ -111,7 +111,9 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
-def settings_for_case(case: dict[str, Any], full_video: bool = False) -> ProcessingSettings:
+def settings_for_case(
+    case: dict[str, Any], full_video: bool = False, model_override: str | None = None
+) -> ProcessingSettings:
     preset_name = str(case.get("preset", "standard"))
     if preset_name not in PRESETS:
         raise ValueError(f"Unknown preset '{preset_name}' in case {case.get('id')}")
@@ -119,7 +121,7 @@ def settings_for_case(case: dict[str, Any], full_video: bool = False) -> Process
 
     return ProcessingSettings(
         backend=str(case.get("backend", "auto")),
-        model=str(case.get("model", "yolo11n-pose.pt")),
+        model=str(model_override or case.get("model", "ski_pose_v1.pt")),
         tracker=str(case.get("tracker", "bytetrack.yaml")),
         imgsz=int(case.get("imgsz", preset["imgsz"])),
         conf=float(case.get("conf", preset["conf"])),
@@ -196,12 +198,17 @@ def safe_ratio(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 5) if denominator else 0.0
 
 
-def run_case(case: dict[str, Any], output_root: Path, full_video: bool = False) -> dict[str, Any]:
+def run_case(
+    case: dict[str, Any],
+    output_root: Path,
+    full_video: bool = False,
+    model_override: str | None = None,
+) -> dict[str, Any]:
     case_id = str(case["id"])
     video = Path(str(case["video"])).expanduser()
     output_dir = output_root / case_id
     output_dir.mkdir(parents=True, exist_ok=True)
-    settings = settings_for_case(case, full_video=full_video)
+    settings = settings_for_case(case, full_video=full_video, model_override=model_override)
 
     print(f"\n== {case_id} ==")
     print(f"video: {video}")
@@ -284,6 +291,7 @@ def main() -> None:
     parser.add_argument("--output-root", default="outputs/eval_baseline", help="Output directory")
     parser.add_argument("--case-id", action="append", help="Run only the given case id; may be repeated")
     parser.add_argument("--full-video", action="store_true", help="Ignore per-case max_frames and process full videos")
+    parser.add_argument("--model", default=None, help="Override the pose model for all cases (e.g. yolo11n-pose.pt for a stock baseline)")
     args = parser.parse_args()
 
     case_args = list(args.cases)
@@ -308,7 +316,10 @@ def main() -> None:
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    summaries = [run_case(case, output_root, full_video=args.full_video) for case in cases]
+    summaries = [
+        run_case(case, output_root, full_video=args.full_video, model_override=args.model)
+        for case in cases
+    ]
     summary_json = output_root / "summary.json"
     summary_md = output_root / "summary.md"
     with summary_json.open("w", encoding="utf-8") as file:
