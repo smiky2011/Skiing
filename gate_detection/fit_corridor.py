@@ -63,11 +63,16 @@ def dedup(gates, W, H):
     return kept
 
 
-def centerline(gates):
-    """Course-SPINE fit: smoothed least-squares polynomial x=f(y) through gate
-    centers (not piecewise-linear through every gate — GS gates alternate sides,
-    so interpolation zigzags; a low-order LS poly recovers the course direction
-    and the band covers the weave). Degree adapts to gate count.
+def centerline(gates, model="channel"):
+    """Two corridor models:
+    - "spine": least-squares poly x=f(y) through gate centers (the course path).
+      Works on wide-GS courses with many gates, but on a narrow few-gate course
+      (qiaobo) it TILTS — connecting alternating gates at different depths slants
+      the line instead of running down the course.
+    - "channel" (default): the course LANE. Gates alternate left/right AROUND the
+      lane, so the lane center is the running median x (≈ vertical for a straight
+      course), and we measure depth-local x by averaging gates within depth bands
+      so the line follows a real sweep but does NOT tilt from alternation.
     """
     pts = sorted(((g["base_y"], g["center_x"]) for g in gates), key=lambda t: t[0])
     ys, xs, keep = [p[0] for p in pts], [p[1] for p in pts], [0] if pts else []
@@ -83,19 +88,35 @@ def centerline(gates):
         c = np.polyfit(yy, xx, deg)
         return c if deg == 2 else np.array([0.0, c[0], c[1]])   # pad linear -> [c2,c1,c0]
 
-    c = _fit(ys, xs)
-    inl = np.ones(len(ys), bool)
-    # one robust pass: drop outlier gates (a stray off-line gate tilts the spine)
+    # robust inliers via the spine fit (also gives the residual reliability number)
+    c = _fit(ys, xs); inl = np.ones(len(ys), bool)
     if len(ys) >= 4:
         resid = np.abs(xs - np.polyval(c, ys))
         mad = np.median(np.abs(resid - np.median(resid))) + 1e-6
-        inl = resid <= 2.5 * mad
-        if 2 <= inl.sum() < len(ys):
+        cand = resid <= max(2.5 * mad, 1.0)          # only adopt if it keeps a valid subset
+        if 2 <= cand.sum() < len(ys):
+            inl = cand
             c = _fit(ys[inl], xs[inl])
-    rms = float(np.sqrt(np.mean((xs[inl] - np.polyval(c, ys[inl])) ** 2))) if inl.sum() else 0.0
-    return {"coeffs": c.tolist(), "y0": float(ys[0]), "y1": float(ys[-1]),
-            # reliability fields (Codex): support, vertical extent, fit tightness
-            "n_gates": int(inl.sum()), "y_span": float(ys[-1] - ys[0]), "residual_px": round(rms, 1)}
+    yi, xi = ys[inl], xs[inl]
+    rms = float(np.sqrt(np.mean((xi - np.polyval(c, yi)) ** 2))) if len(xi) else 0.0
+
+    if model == "channel":
+        # depth-bin the gates, take the lane center (mean x) per band so left/right
+        # alternation cancels, then a low-slope line through the band-centers.
+        nb = min(3, max(1, len(xi) // 2))
+        edges = np.linspace(yi.min(), yi.max(), nb + 1)
+        by, bx = [], []
+        for k in range(nb):
+            m = (yi >= edges[k]) & (yi <= edges[k + 1])
+            if m.any():
+                by.append(float(yi[m].mean())); bx.append(float(xi[m].mean()))
+        if len(set(round(v) for v in by)) >= 2:
+            c = _fit(np.array(by), np.array(bx))      # line through lane-centers
+        else:
+            c = np.array([0.0, 0.0, float(np.median(xi))])   # vertical at median x
+
+    return {"coeffs": c.tolist(), "y0": float(yi.min()), "y1": float(yi.max()),
+            "n_gates": int(inl.sum()), "y_span": float(yi.max() - yi.min()), "residual_px": round(rms, 1)}
 
 
 def x_at_y(cl, y):
@@ -143,6 +164,7 @@ def main():
     ap.add_argument("--imgsz", type=int, default=960)
     ap.add_argument("--band-ratio", type=float, default=0.25, help="corridor half-width / frame width")
     ap.add_argument("--smooth-alpha", type=float, default=0.35, help="EMA weight on the new frame (lower = smoother)")
+    ap.add_argument("--corridor-model", choices=["channel", "spine"], default="channel")
     ap.add_argument("--cases", nargs="+", default=DEFAULT_CASES)
     ap.add_argument("--cases-file", default=str(REPO / "eval" / "cases.json"))
     ap.add_argument("--out", default=str(REPO / "outputs" / "gate_corridor"))
@@ -179,7 +201,7 @@ def main():
             if not ok:
                 break
             gates = dedup(detect(det, frame, args.conf, args.iou, args.imgsz), W, H)
-            raw_cl = centerline(gates)
+            raw_cl = centerline(gates, model=args.corridor_model)
             if raw_cl is None:                   # too few gates -> carry the smoothed corridor
                 if ema_cl is not None:
                     carried += 1
