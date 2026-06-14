@@ -1,0 +1,32 @@
+# Tracker v2.1 Calibrated Thresholds
+# Generated: 20260219 by Track H calibration
+# Eval split: tracks/A_eval_harness/eval_split.json
+# Baseline IDF1: 0.5368  Calibrated IDF1: 0.5368
+
+vp_ema:
+  alpha_max: 0.30  # CI: [0.30, 0.30]
+  N_req: 2  # CI: [2.00, 2.00]
+
+rolling_shutter:
+  buffer_deg: 8.0  # CI: [2.0, 8.0]
+  # theta is derived analytically (arctan(vx * tr / H)) — not learned
+
+keypoint:
+  tau_kp: 0.50  # CI: [0.50, 0.50]
+
+sequence:
+  T_min: 3  # CI: [3.00, 3.00]
+  tau_seq: -3.00  # CI: [-3.00, -3.00]
+  fifo_depth: 45  # CI: [45.00, 45.00]
+
+safety:
+  eis_threshold: 0.050  # CI: [0.050, 0.050]
+  stability_window: 5  # CI: [5.00, 5.00]
+  confidence_floor: -2.00  # CI: [-4.00, -2.00]
+
+hmm:
+  A_matrix_path: tracks/H_calibration/outputs/hmm_A_20260219.json
+  B_matrix_path: tracks/H_calibration/outputs/hmm_B_20260219.json
+
+pan_discriminator:
+  min_pan_frames: 3  # verified analytically against EIS run-length behavior

@@ -1,0 +1,124 @@
+================================================================================
+IMAGES RECOMMENDED FOR REMOVAL - SKI GATE DETECTION DATASET
+================================================================================
+
+This file lists images that should be removed or excluded from the dataset
+due to quality issues.
+
+================================================================================
+CRITICAL - MUST REMOVE (2 images)
+================================================================================
+
+These images are completely black and contain no usable information:
+
+Location: train/images/
+
+1. GS__Lucas-GS-T2__frame_0007_jpg.rf.8e675b93243457020496ae1e497948d3.jpg
+   Status: COMPLETELY BLACK
+   Brightness: 0.14 (nearly 0 out of 255)
+   Contrast: 2.74 (extremely low variation)
+   Recommendation: DELETE - unusable
+
+2. GS__MO-GS-T3__frame_0040_jpg.rf.7179bf5df51f3b5c7f358f6b047fda11.jpg
+   Status: COMPLETELY BLACK
+   Brightness: 0.42 (nearly 0 out of 255)
+   Contrast: 5.98 (extremely low variation)
+   Recommendation: DELETE - unusable
+
+Removal commands:
+rm train/images/GS__Lucas-GS-T2__frame_0007_jpg.rf.8e675b93243457020496ae1e497948d3.jpg
+rm train/images/GS__MO-GS-T3__frame_0040_jpg.rf.7179bf5df51f3b5c7f358f6b047fda11.jpg
+
+================================================================================
+HIGH PRIORITY - REVIEW (2 images)
+================================================================================
+
+These images are extremely dark and likely contain minimal useful content:
+
+Location: train/images/
+
+1. GS__Lucas-GS-T2__frame_0000_jpg.rf.b6ba779e51e2ba550356bd86850e6604.jpg
+   Status: NEARLY BLACK
+   Brightness: 3.67 (very dark)
+   Contrast: 19.07 (low contrast)
+   Recommendation: REVIEW annotations - if sparse, REMOVE
+
+2. GS__Lucas-GS-T2__frame_0001_jpg.rf.d3303e09618e2eb1894b686bf4733dee.jpg
+   Status: NEARLY BLACK
+   Brightness: 3.93 (very dark)
+   Contrast: 19.10 (low contrast)
+   Recommendation: REVIEW annotations - if sparse, REMOVE
+
+================================================================================
+OPTIONAL - LOW CONTRAST IMAGES (224 images)
+================================================================================
+
+These images have very low visual variation (std dev < 15), suggesting:
+- Snow/fog scenes with minimal visible detail
+- Possible blank or mostly uniform color images
+- Challenging gate detection scenarios
+
+These may be valuable training examples for robustness, BUT should be
+reviewed to ensure:
+1. Gates ARE properly annotated (despite low contrast)
+2. Annotations are complete and accurate
+3. They add value to the training dataset
+
+If annotations are sparse or missing in these images, consider removal.
+
+See image_quality_issues.csv for complete list of all 224 low-contrast images.
+
+Key examples from validation/test splits with low contrast:
+- [valid] GS__MO-GS-T3__frame_0080.jpg (contrast: 5.54)
+- [test]  GS__Lucas-GS-T3__frame_0034.jpg (contrast: 5.66)
+- [valid] GS__MO-GS-T__frame_0091.jpg (contrast: 5.71)
+- [valid] GS__MO-GS-T__frame_0055.jpg (contrast: 6.08)
+
+================================================================================
+SUMMARY OF ACTIONS
+================================================================================
+
+MINIMUM REQUIRED DATASET QUALITY:
+- Delete 2 completely black images (IDs listed above)
+- Result: 418 images remaining (99.5% of original)
+
+RECOMMENDED FOR BETTER QUALITY:
+- Delete 2 nearly black images (IDs listed above)
+- Result: 416 images remaining (99.0% of original)
+
+OPTIMAL QUALITY:
+- Delete 4 very dark images
+- Review and remove 224 low-contrast images without proper annotations
+- Result: Potentially 192-214 images remaining (varies based on annotations)
+
+Current dataset is acceptable for training with the 4 dark images removed.
+The 224 low-contrast images may actually be valuable for robustness in 
+poor visibility conditions.
+
+================================================================================
+HOW TO USE THIS FILE
+================================================================================
+
+1. Navigate to dataset directory:
+   cd "/sessions/admiring-magical-albattani/mnt/Stanford application project/data/annotations/ski-gate-detection.v2i.yolov8"
+
+2. To delete the 2 completely black images:
+   rm train/images/GS__Lucas-GS-T2__frame_0007_jpg.rf.8e675b93243457020496ae1e497948d3.jpg
+   rm train/images/GS__MO-GS-T3__frame_0040_jpg.rf.7179bf5df51f3b5c7f358f6b047fda11.jpg
+
+3. To review and delete the 2 nearly black images:
+   ls -lh train/images/GS__Lucas-GS-T2__frame_0000_jpg.rf.b6ba779e51e2ba550356bd86850e6604.jpg
+   ls -lh train/images/GS__Lucas-GS-T2__frame_0001_jpg.rf.d3303e09618e2eb1894b686bf4733dee.jpg
+   
+   Then decide whether to remove based on annotation review.
+
+4. For low-contrast images, see image_quality_issues.csv for the full list.
+
+================================================================================
+ADDITIONAL RESOURCES
+================================================================================
+
+- QUALITY_ANALYSIS_REPORT.txt: Comprehensive analysis and recommendations
+- image_quality_issues.csv: Detailed CSV with all quality metrics for each image
+
+================================================================================

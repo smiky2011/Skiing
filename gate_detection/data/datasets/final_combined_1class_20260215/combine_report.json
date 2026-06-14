@@ -1,0 +1,32 @@
+{
+  "source_roots": [
+    "../../data/annotations/final_combined_1class_20260213",
+    "artifacts/mined_small_gates_20260215",
+    "artifacts/targeted_addon_20260215"
+  ],
+  "destination": "artifacts/final_combined_1class_20260215",
+  "keep_empty": true,
+  "merge_classes": true,
+  "unsplit_target": "train",
+  "source_count": 3,
+  "pairs_seen": 464,
+  "pairs_kept_before_dedup": 464,
+  "dropped_empty": 0,
+  "dropped_invalid_labels": 0,
+  "dropped_unreadable_images": 0,
+  "unique_images_after_dedup": 464,
+  "duplicate_sha_dropped": 0,
+  "replaced_for_richer_labels": 0,
+  "split_image_counts": {
+    "train": 342,
+    "valid": 84,
+    "test": 38
+  },
+  "split_box_counts": {
+    "train": 1945,
+    "valid": 389,
+    "test": 100
+  },
+  "manifest_path": "artifacts/final_combined_1class_20260215/manifest.csv",
+  "data_yaml_path": "artifacts/final_combined_1class_20260215/data.yaml"
+}

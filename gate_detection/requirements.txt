@@ -1,0 +1,12 @@
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+torch>=2.0.0
+yt-dlp>=2024.07.01
+# ByteTrack requires a linear assignment solver.
+# Install lap (preferred) OR lapjv (alternative). At least one must be present.
+# If both are missing, ByteTrack will silently fall back to the inferior temporal tracker.
+# Run: pip install lap>=0.5.12
+# If lap fails to build on your system, try: pip install lapjv
+lap>=0.5.12

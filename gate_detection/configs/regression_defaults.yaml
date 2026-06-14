@@ -1,0 +1,37 @@
+# Frozen regression settings for Track E evaluation pipeline.
+# Last updated: 2026-02-28 (F1>=0.80 sprint: ensemble + clustering fix)
+gate_conf: 0.36
+gate_iou: 0.55
+
+# Ensemble evaluation: primary + secondary model merged with NMS
+# Required for F1>=0.80 (single model caps at 0.7671)
+ensemble_model: models/gate_detector_neg20_ensemble.pt
+ensemble_nms_iou: 0.50
+gate_full_track: true
+outlier_filter: true
+kalman_smooth: true
+gate_init_mode: single_best
+gate_consensus_min_support: 3
+# stabilize: true  # deprecated alias — remove after 2026-04-30
+# camera_mode and projection removed — 2D-first pipeline no longer accepts these
+discipline: slalom
+# gate_spacing_m removed — pipeline uses discipline default (slalom=9.5m)
+
+# Explicit defaults used by process_video / pipeline for determinism.
+# skier_conf lowered 0.25→0.15: +1.4pp coverage gain, 0 track_id_switches
+# (Phase 2.3 sweep: 5 values tested, 0 switches at all thresholds, lower=better coverage)
+skier_conf: 0.15
+# camera_pitch_deg removed — auto-estimation was unreliable
+
+# gate_search_frames: sweep showed identical gate counts at 100/150/200/300;
+# keep at 150 (original default) — no benefit to increasing, no harm
+gate_search_frames: 150
+gate_search_stride: 5
+
+# gate_track_frames: sweep showed identical results at 0/60/120/240;
+# keep at 120 (original default) — temporal tracking stabilizes positions
+# but doesn't add gate count on current regression videos
+gate_track_frames: 120
+gate_track_stride: 3
+gate_track_min_obs: 3
+frame_stride: 1

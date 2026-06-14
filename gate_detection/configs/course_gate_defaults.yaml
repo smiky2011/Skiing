@@ -1,0 +1,10 @@
+# Written by tune_course_gate_counter.py on 20260301_232446
+course_gate_conf: 0.2
+course_gate_stride: 2
+course_gate_min_hits: 3
+track_missing_max: 8
+match_thresh_ratio: 0.06
+fragment_merge_gap_max: 45
+dedup_dx_ratio: 0.03
+dedup_dy_ratio: 0.05
+dedup_overlap_thresh: 0.50

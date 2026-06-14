@@ -1,0 +1,160 @@
+================================================================================
+SKI GATE DETECTION YOLOv8 DATASET - IMAGE QUALITY ANALYSIS REPORT
+================================================================================
+
+Generated: 2025-02-09
+Dataset Location: /sessions/admiring-magical-albattani/mnt/Stanford\ application\ project/data/annotations/ski-gate-detection.v2i.yolov8
+
+================================================================================
+EXECUTIVE SUMMARY
+================================================================================
+
+Total Images Analyzed: 420
+  - Train split:   293 images
+  - Valid split:    85 images
+  - Test split:     42 images
+
+================================================================================
+QUALITY ISSUES FOUND
+================================================================================
+
+1. DARK IMAGES (brightness < 40): 4 images
+   These images are extremely dark and likely contain little usable information.
+   Recommendation: REMOVE or EXCLUDE from training
+
+2. CORRUPTED/UNLOADABLE IMAGES: 0 images
+   All images loaded successfully without errors.
+
+3. SMALL IMAGES (< 100x100 pixels): 0 images
+   All images have sufficient dimensions for training.
+
+4. LOW CONTRAST IMAGES (std dev < 15): 224 images
+   These images have very low visual variation - mostly uniform color.
+   This could indicate blank frames, poor quality captures, or snow/fog conditions.
+   Recommendation: REVIEW and potentially EXCLUDE low-value samples
+
+================================================================================
+DARK IMAGES - DETAILS
+================================================================================
+
+All 4 dark images are in the TRAIN split:
+
+1. GS__Lucas-GS-T2__frame_0000_jpg.rf.b6ba779e51e2ba550356bd86850e6604.jpg
+   Brightness: 3.67 (extremely dark)
+   Dimensions: 640x640
+   Status: NEARLY BLACK - likely unusable
+
+2. GS__Lucas-GS-T2__frame_0001_jpg.rf.d3303e09618e2eb1894b686bf4733dee.jpg
+   Brightness: 3.93 (extremely dark)
+   Dimensions: 640x640
+   Status: NEARLY BLACK - likely unusable
+
+3. GS__Lucas-GS-T2__frame_0007_jpg.rf.8e675b93243457020496ae1e497948d3.jpg
+   Brightness: 0.14 (COMPLETELY BLACK)
+   Dimensions: 640x640
+   Contrast: 2.74 (also low contrast)
+   Status: COMPLETELY BLACK - must be removed
+
+4. GS__MO-GS-T3__frame_0040_jpg.rf.7179bf5df51f3b5c7f358f6b047fda11.jpg
+   Brightness: 0.42 (COMPLETELY BLACK)
+   Dimensions: 640x640
+   Contrast: 5.98 (also low contrast)
+   Status: COMPLETELY BLACK - must be removed
+
+================================================================================
+LOW CONTRAST IMAGES - ANALYSIS
+================================================================================
+
+Count: 224 images (53.3% of total dataset)
+
+Distribution:
+  - Train split:  161 images (54.9% of train)
+  - Valid split:   43 images (50.6% of valid)
+  - Test split:    20 images (47.6% of test)
+
+Characteristics:
+- Most have brightness around 90-120 (relatively bright)
+- Many appear to be snow/fog scenes with minimal visual variation
+- Standard deviation < 15 indicates very uniform coloring
+- Some may represent valid gate detection scenarios in poor visibility
+
+Examples of low contrast images:
+  - GS__Lucas-GS-T3__frame_0024: brightness 98.01, contrast 6.17
+  - GS__Lucas-GS-T3__frame_0031: brightness 98.33, contrast 5.40
+  - GS__MO-GS-T3__frame_0040: brightness ~114, contrast 5.98 (also dark)
+  - GS__MO-GS-T__frame_0049: brightness ~94, contrast 5.71
+
+Recommendation:
+  These images may actually be valid for ski gate detection (snow/fog scenarios),
+  but they represent challenging detection cases. Consider:
+  1. KEEP if they have proper annotations (gates are annotated despite low contrast)
+  2. REVIEW annotations to ensure gates are marked in low-contrast regions
+  3. Potentially use for robustness testing / difficult cases
+
+================================================================================
+DETAILED FINDINGS BY SPLIT
+================================================================================
+
+TRAIN SPLIT (293 images):
+  - Dark images: 4
+  - Low contrast: 161 (54.9%)
+  - Quality status: Most images appear usable; remove 2 completely black images
+
+VALID SPLIT (85 images):
+  - Dark images: 0
+  - Low contrast: 43 (50.6%)
+  - Quality status: All images appear usable
+
+TEST SPLIT (42 images):
+  - Dark images: 0
+  - Low contrast: 20 (47.6%)
+  - Quality status: All images appear usable
+
+================================================================================
+RECOMMENDATIONS
+================================================================================
+
+IMMEDIATE ACTIONS (HIGH PRIORITY):
+1. Remove 2 completely black images:
+   - GS__Lucas-GS-T2__frame_0007_jpg.rf.8e675b93243457020496ae1e497948d3.jpg
+   - GS__MO-GS-T3__frame_0040_jpg.rf.7179bf5df51f3b5c7f358f6b047fda11.jpg
+
+2. Review 2 nearly black images:
+   - GS__Lucas-GS-T2__frame_0000_jpg.rf.b6ba779e51e2ba550356bd86850e6604.jpg
+   - GS__Lucas-GS-T2__frame_0001_jpg.rf.d3303e09618e2eb1894b686bf4733dee.jpg
+   Consider removal if annotations are sparse
+
+OPTIONAL ACTIONS (FOR CONSIDERATION):
+3. Review low contrast images (224 total):
+   - Check if gates are properly annotated despite low contrast
+   - These may be valuable for robustness in poor visibility conditions
+   - If annotations are sparse/missing in these images, consider removal
+   - Alternatively, use for data augmentation and challenging scenarios
+
+DATA QUALITY METRICS:
+- Usable images (immediately): 414-416 out of 420 (98.6-99%)
+- Images needing review: 2-4 (mostly dark images)
+- All images have correct dimensions
+- No corrupted/unloadable images
+
+================================================================================
+TECHNICAL DETAILS
+================================================================================
+
+Analysis Methodology:
+- Image brightness: Mean pixel value in grayscale (0-255 scale)
+  * Dark threshold: < 40
+  * Low brightness indicates poor visibility or black frames
+
+- Image contrast: Standard deviation of pixel values in grayscale
+  * Low contrast threshold: < 15
+  * Low contrast indicates uniform coloring or blank/corrupted images
+
+- Image dimensions: Analyzed width and height
+  * All images in dataset are 640x640 pixels (good for YOLOv8)
+
+All analysis performed with OpenCV (cv2) library.
+
+================================================================================
+END OF REPORT
+================================================================================

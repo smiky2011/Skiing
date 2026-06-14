@@ -1,0 +1,8 @@
+# Guard against committing heavy/binary artifacts into the recovered system
+*.MOV
+*.mov
+*.mp4
+*.pt
+*.cache
+__pycache__/
+*.pyc

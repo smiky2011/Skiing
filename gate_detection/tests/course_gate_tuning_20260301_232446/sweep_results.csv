@@ -1,0 +1,2 @@
+iteration,course_gate_conf,min_hits,track_missing_max,fragment_merge_gap_max,match_thresh_ratio,min_accuracy,1592_raw_detected,1592_raw_accuracy,mmexport1704641869528_detected,mmexport1704641869528_accuracy,mmexport1706076255933_detected,mmexport1706076255933_accuracy
+1,0.2,3,8,45,0.06,1.0000,66,1.0000,36,1.0000,37,1.0000
