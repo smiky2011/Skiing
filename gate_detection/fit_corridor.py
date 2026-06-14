@@ -77,14 +77,38 @@ def centerline(gates):
     ys = np.array([ys[i] for i in keep], float); xs = np.array([xs[i] for i in keep], float)
     if len(ys) < 2:
         return None
-    deg = 2 if len(ys) >= 5 else 1
-    coeffs = np.polyfit(ys, xs, deg)
-    return {"coeffs": coeffs.tolist(), "y0": float(ys[0]), "y1": float(ys[-1])}
+
+    def _fit(yy, xx):
+        deg = 2 if len(yy) >= 5 else 1
+        c = np.polyfit(yy, xx, deg)
+        return c if deg == 2 else np.array([0.0, c[0], c[1]])   # pad linear -> [c2,c1,c0]
+
+    c = _fit(ys, xs)
+    # one robust pass: drop outlier gates (a stray off-line gate tilts the spine)
+    if len(ys) >= 4:
+        resid = np.abs(xs - np.polyval(c, ys))
+        mad = np.median(np.abs(resid - np.median(resid))) + 1e-6
+        inl = resid <= 2.5 * mad
+        if 2 <= inl.sum() < len(ys):
+            c = _fit(ys[inl], xs[inl])
+    return {"coeffs": c.tolist(), "y0": float(ys[0]), "y1": float(ys[-1])}
 
 
 def x_at_y(cl, y):
     y = float(min(max(y, cl["y0"]), cl["y1"]))   # clamp to observed gate depth range
     return float(np.polyval(cl["coeffs"], y))
+
+
+def ema(prev, cur, a):
+    """Temporal smoothing of the spine (EMA on coeffs + y-range) to kill jitter."""
+    if prev is None:
+        return cur
+    if cur is None:
+        return prev
+    pc, cc = np.array(prev["coeffs"]), np.array(cur["coeffs"])
+    return {"coeffs": (a * cc + (1 - a) * pc).tolist(),
+            "y0": a * cur["y0"] + (1 - a) * prev["y0"],
+            "y1": a * cur["y1"] + (1 - a) * prev["y1"]}
 
 
 def draw(frame, gates, cl, band_px):
@@ -110,7 +134,8 @@ def main():
     ap.add_argument("--conf", type=float, default=0.45)   # Codex: 0.45 baseline
     ap.add_argument("--iou", type=float, default=0.45)
     ap.add_argument("--imgsz", type=int, default=960)
-    ap.add_argument("--band-ratio", type=float, default=0.18, help="corridor half-width / frame width")
+    ap.add_argument("--band-ratio", type=float, default=0.25, help="corridor half-width / frame width")
+    ap.add_argument("--smooth-alpha", type=float, default=0.35, help="EMA weight on the new frame (lower = smoother)")
     ap.add_argument("--cases", nargs="+", default=DEFAULT_CASES)
     ap.add_argument("--cases-file", default=str(REPO / "eval" / "cases.json"))
     ap.add_argument("--out", default=str(REPO / "outputs" / "gate_corridor"))
@@ -139,7 +164,7 @@ def main():
         writer = cv2.VideoWriter(str(out_dir / f"{cid}_corridor.mp4"),
                                  cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
 
-        per_frame, last_cl, i, support, carried = [], None, 0, [], 0
+        per_frame, ema_cl, i, support, carried = [], None, 0, [], 0
         while True:
             if maxf is not None and i >= int(maxf):
                 break
@@ -147,13 +172,13 @@ def main():
             if not ok:
                 break
             gates = dedup(detect(det, frame, args.conf, args.iou, args.imgsz), W, H)
-            cl = centerline(gates)
-            if cl is None:                       # too few gates -> carry forward last good corridor
-                cl = last_cl
-                if last_cl is not None:
+            raw_cl = centerline(gates)
+            if raw_cl is None:                   # too few gates -> carry the smoothed corridor
+                if ema_cl is not None:
                     carried += 1
-            else:
-                last_cl = cl
+            else:                                # temporal EMA -> kills frame-to-frame jitter
+                ema_cl = ema(ema_cl, raw_cl, args.smooth_alpha)
+            cl = ema_cl
             support.append(len(gates))
             writer.write(draw(frame, gates, cl, band_px))
             per_frame.append({
